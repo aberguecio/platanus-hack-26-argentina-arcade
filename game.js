@@ -449,7 +449,13 @@ function create() {
   scene.player.peakY = scene.player.y;
   scene.player.flashTicks = 0;
   scene.player.invulnTicks = 0;
+  scene.player.wasInWater = false;
   scene.gameOver = false;
+
+  // Web Audio context for procedural SFX + music. May be suspended
+  // until a user gesture; we resume in startMusic / sfx.
+  scene.audioCtx = (scene.sound && scene.sound.context) || null;
+  scene.musicOn = false;
 
   // Monsters (only present during night).
   scene.monsters = [];
@@ -1022,6 +1028,7 @@ function handleInput(scene) {
       scene.titleOpen = false;
       scene.titleContainer.setVisible(false);
       setTutorialStep(scene, 1);
+      startMusic(scene); // U press counts as user gesture → unsuspends audio
     }
     c.pressed.P1_2 = false; c.pressed.P1_3 = false; c.pressed.P1_U = false;
     return;
@@ -1187,6 +1194,13 @@ function tryMine(scene, dx, dy) {
       w[idx] = AIR;
       damage[idx] = 0;
       scene.dirtyMineral = true;
+      // SFX by tile category: picota for minerals+structures, thud for
+      // solids, crunchy for sandlike, hacha for wood.
+      const cat = BLOCK_CAT[t];
+      if (t === WOOD)                                    sfx(scene, 'mineWood');
+      else if (cat === CAT_MINERAL || cat === CAT_MAGIC) sfx(scene, 'mineMineral');
+      else if (cat === CAT_SANDLIKE)                     sfx(scene, 'mineSand');
+      else                                               sfx(scene, 'mineSolid');
       // Drops are configured per block; bricks/doors/stairs return their
       // original raw material × 10 instead of the placed tile itself.
       const dropT = BLOCK_DROP_TYPE[t];
@@ -1487,6 +1501,9 @@ function updatePlayerHazards(scene) {
   } else {
     p.lavaTicks = 0;
   }
+
+  if (st.touchingWater && !p.wasInWater) sfx(scene, 'splash');
+  p.wasInWater = st.touchingWater;
 }
 
 function applyPlayerDamage(scene, amt) {
@@ -1495,6 +1512,7 @@ function applyPlayerDamage(scene, amt) {
   p.hp -= amt;
   // Visual feedback for ANY damage (drown, lava, fall, monster touch).
   p.flashTicks = PLAYER_FLASH_TICKS;
+  sfx(scene, 'playerHurt');
   if (p.hp <= 0) {
     p.hp = 0;
     onPlayerDeath(scene);
@@ -2683,6 +2701,7 @@ function createMonster(scene, type, x, y) {
 function applyMonsterDamage(scene, m, dmg) {
   m.hp -= dmg;
   m.flashTicks = 12;
+  sfx(scene, 'monsterHurt');
   // Knockback is opt-in per monster. Ghost-like enemies (future) will
   // have receivesKnockback:false and absorb the hit without being
   // shoved around.
@@ -2875,6 +2894,7 @@ function tickBomberFuse(scene, m, p, def) {
     const dy = (p.y - p.h / 2) - (m.y - m.h / 2);
     if (Math.hypot(dx, dy) <= def.explosionRange) {
       m.fuseTicks = def.fuseTicks;
+      sfx(scene, 'bomberFuse');
     }
     return;
   }
@@ -2883,6 +2903,7 @@ function tickBomberFuse(scene, m, p, def) {
 }
 
 function bomberExplode(scene, m, def) {
+  sfx(scene, 'explosion');
   // Destroy most tiles in a circular blast. World BORDER stays intact
   // so the map can't be blown open; everything else goes.
   const cx = (m.x / TILE) | 0;
@@ -3012,6 +3033,117 @@ function despawnAllMonsters(scene) {
   }
   scene.monsters.length = 0;
   scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
+}
+
+// ============================================================
+// 10.8. Audio — procedural SFX + music (Web Audio API)
+// ============================================================
+//
+// All sounds are synthesized on the fly via `scene.sound.context`
+// (the Web Audio AudioContext Phaser owns). Zero asset footprint.
+// Each SFX is a few oscillators/noise bursts with envelopes stacked.
+
+function toneBurst(ctx, freq, dur, type, peak, atk) {
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.value = freq;
+  const g = ctx.createGain();
+  const t = ctx.currentTime;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(peak, t + (atk || 0.005));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(t); osc.stop(t + dur + 0.05);
+}
+
+function sweepBurst(ctx, f0, f1, dur, type, peak) {
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  const t = ctx.currentTime;
+  osc.frequency.setValueAtTime(f0, t);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(peak, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(t); osc.stop(t + dur + 0.05);
+}
+
+function noiseBurst(ctx, dur, peak, filterType, filterFreq) {
+  const n = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const g = ctx.createGain();
+  const t = ctx.currentTime;
+  g.gain.setValueAtTime(peak, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  let node = src;
+  if (filterType) {
+    const f = ctx.createBiquadFilter();
+    f.type = filterType; f.frequency.value = filterFreq;
+    src.connect(f); node = f;
+  }
+  node.connect(g); g.connect(ctx.destination);
+  src.start(t); src.stop(t + dur);
+}
+
+function sfx(scene, name) {
+  const ctx = scene.audioCtx;
+  if (!ctx) return;
+  if (ctx.state === 'suspended') ctx.resume();
+  if      (name === 'mineMineral') { toneBurst(ctx, 900, 0.07, 'square',  0.06, 0.003); noiseBurst(ctx, 0.05, 0.04, 'lowpass',  300); }
+  else if (name === 'mineSolid')   { noiseBurst(ctx, 0.09, 0.09, 'lowpass', 400); }
+  else if (name === 'mineSand')    { noiseBurst(ctx, 0.12, 0.10, 'bandpass', 1500); }
+  else if (name === 'mineWood')    { toneBurst(ctx, 180, 0.08, 'square', 0.07, 0.004); noiseBurst(ctx, 0.04, 0.06, 'bandpass', 600); }
+  else if (name === 'playerHurt')  { toneBurst(ctx, 220, 0.22, 'sawtooth', 0.10, 0.008); }
+  else if (name === 'monsterHurt') { toneBurst(ctx, 700, 0.08, 'sawtooth', 0.06, 0.004); }
+  else if (name === 'explosion')   { sweepBurst(ctx, 200, 35, 0.45, 'sine', 0.20); noiseBurst(ctx, 0.5, 0.20, 'lowpass', 450); }
+  else if (name === 'splash')      { noiseBurst(ctx, 0.35, 0.08, 'highpass', 1800); }
+  else if (name === 'bomberFuse')  { toneBurst(ctx, 900, 0.05, 'square', 0.04, 0.002); }
+}
+
+// Procedural music: A-minor pentatonic loop by day, darker/faster at
+// night. Each note plays a triangle melody + an octave-down bass.
+const MUSIC_DAY   = [57, 60, 64, 67, 64, 60, 55, 52, 57, 60, 64, 67];
+const MUSIC_NIGHT = [45, 48, 51, 48, 45, 43, 40, 43, 48, 51, 48, 43];
+
+function midiToFreq(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+function playMusicNote(ctx, freq, dur, peak) {
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.value = freq;
+  const g = ctx.createGain();
+  const t = ctx.currentTime;
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + 0.03);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(t); osc.stop(t + dur + 0.1);
+}
+
+function startMusic(scene) {
+  if (scene.musicOn || !scene.audioCtx) return;
+  scene.musicOn = true;
+  scene.musicIdx = 0;
+  if (scene.audioCtx.state === 'suspended') scene.audioCtx.resume();
+  scheduleNextNote(scene);
+}
+
+function scheduleNextNote(scene) {
+  if (!scene.musicOn || !scene.audioCtx) return;
+  const isNight = scene.nightActive;
+  const pattern = isNight ? MUSIC_NIGHT : MUSIC_DAY;
+  const noteMs = isNight ? 300 : 520;
+  const freq = midiToFreq(pattern[scene.musicIdx % pattern.length]);
+  scene.musicIdx++;
+  playMusicNote(scene.audioCtx, freq, noteMs / 1000, 0.04);
+  playMusicNote(scene.audioCtx, freq / 2, noteMs / 1000, 0.018);
+  scene.time.delayedCall(noteMs, () => scheduleNextNote(scene));
 }
 
 // ============================================================
