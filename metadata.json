@@ -1,5 +1,5 @@
 {
-  "game_name": "<FILL THIS>",
-  "description": "<FILL THIS>",
-  "player_mode": "two_player"
+  "game_name": "Strike and Stone",
+  "description": "Strike rock with your pickaxe and watch the world react. Dig through dirt, stone, and ore in a procedurally generated cave — mining triggers cave-ins, sand pours, water spreads, and lava oozes. Pick your tunnels carefully.",
+  "player_mode": "single_player"
 }
