@@ -48,22 +48,36 @@ const CAT_MAGIC = 5;
 
 // Type ids — keep stable so a saved world (future feature) doesn't drift.
 const AIR = 0, DIRT = 1, SAND = 2, WATER = 3, STONE = 4,
-      GRAVEL = 5, LAVA = 6, COPPER = 7, IRON = 8, BORDER = 9;
+      GRAVEL = 5, LAVA = 6, COPPER = 7, IRON = 8, BORDER = 9,
+      WOOD = 10, COPPER_INGOT = 11, IRON_INGOT = 12,
+      FURNACE = 13, IRON_DOOR = 14;
 
 // Colors are packed little-endian 0xAABBGGRR for direct Uint32 writes
 // into the canvas ImageData buffer.
+//
+// Hardness and TOOL_DAMAGE share a single damage-units scale:
+//   fist = 2, wood pick = 10, stone pick = 20, copper pick = 30.
+// So hardness=10 means "1 wood-pick hit"; hardness=4 means "0.4 wood-pick
+// hits" (fists break it in 2 hits). Everything lives in Uint8Array.
 const BLOCKS = [
-  // id, name, cat, color, fallTicks, hardness
-  { id: AIR,    cat: CAT_AIR,      color: 0xff0a0d18, fallTicks: 0,  hardness: 0 },
-  { id: DIRT,   cat: CAT_SOLID,    color: 0xff2c4f7a, fallTicks: 30, hardness: 1 },
-  { id: SAND,   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 20, hardness: 1 },
-  { id: WATER,  cat: CAT_LIQUID,   color: 0xffd88030, fallTicks: 10, hardness: 1 },
-  { id: STONE,  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 30, hardness: 2 },
-  { id: GRAVEL, cat: CAT_SANDLIKE, color: 0xff6e7e95, fallTicks: 30, hardness: 2 },
-  { id: LAVA,   cat: CAT_LIQUID,   color: 0xff1840f0, fallTicks: 60, hardness: 5 },
-  { id: COPPER, cat: CAT_MINERAL,  color: 0xff2a8acc, fallTicks: 30, hardness: 4 },
-  { id: IRON,   cat: CAT_MINERAL,  color: 0xff8090a0, fallTicks: 30, hardness: 6 },
-  { id: BORDER, cat: CAT_MAGIC,    color: 0xff1a1a1a, fallTicks: 0,  hardness: 0 },
+  // id, name, cat, color, fallTicks, hardness (damage units)
+  { id: AIR,    name: 'air',    cat: CAT_AIR,      color: 0xff0a0d18, fallTicks: 0,  hardness: 0  },
+  { id: DIRT,   name: 'dirt',   cat: CAT_SOLID,    color: 0xff2c4f7a, fallTicks: 20, hardness: 10 },
+  { id: SAND,   name: 'sand',   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 15, hardness: 10 },
+  { id: WATER,  name: 'water',  cat: CAT_LIQUID,   color: 0xffd88030, fallTicks: 6, hardness: 10 },
+  { id: STONE,  name: 'stone',  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 20, hardness: 20 },
+  { id: GRAVEL, name: 'gravel', cat: CAT_SANDLIKE, color: 0xff6e7e95, fallTicks: 15, hardness: 20 },
+  { id: LAVA,   name: 'lava',   cat: CAT_LIQUID,   color: 0xff1840f0, fallTicks: 40, hardness: 50 },
+  { id: COPPER, name: 'copper', cat: CAT_MINERAL,  color: 0xff2a8acc, fallTicks: 20, hardness: 40 },
+  { id: IRON,   name: 'iron',   cat: CAT_MINERAL,  color: 0xff8090a0, fallTicks: 20, hardness: 60 },
+  { id: BORDER, name: 'border', cat: CAT_MAGIC,    color: 0xff1a1a1a, fallTicks: 0,  hardness: 0  },
+  { id: WOOD,         name: 'wood',         cat: CAT_SOLID,   color: 0xff1d3a6e, fallTicks: 20, hardness: 4 },
+  // Inventory-only items (never appear in the world): ingots.
+  { id: COPPER_INGOT, name: 'copper ingot', cat: CAT_AIR,     color: 0xff2a8ad8, fallTicks: 0,  hardness: 0 },
+  { id: IRON_INGOT,   name: 'iron ingot',   cat: CAT_AIR,     color: 0xffc8d4de, fallTicks: 0,  hardness: 0 },
+  // Placeable structures (magic, unbreakable in v3).
+  { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC,   color: 0xff3a3a40, fallTicks: 0,  hardness: 0 },
+  { id: IRON_DOOR,    name: 'iron door',    cat: CAT_MAGIC,   color: 0xffa0a8b4, fallTicks: 0,  hardness: 0 },
 ];
 
 // Flat lookup tables for the hot path. 64-slot capacity (TYPE_MASK + 1).
@@ -71,12 +85,42 @@ const BLOCK_CAT = new Uint8Array(64);
 const BLOCK_COLOR = new Uint32Array(64);
 const BLOCK_FALL_TICKS = new Uint8Array(64);
 const BLOCK_HARDNESS = new Uint8Array(64);
+const BLOCK_NAME = new Array(64);
 for (const b of BLOCKS) {
   BLOCK_CAT[b.id] = b.cat;
   BLOCK_COLOR[b.id] = b.color;
   BLOCK_FALL_TICKS[b.id] = b.fallTicks;
   BLOCK_HARDNESS[b.id] = b.hardness;
+  BLOCK_NAME[b.id] = b.name;
 }
+
+// ----- Tools: damage × 10 (integer resolution for fist's 0.2). -----
+// Threshold to break a tile = BLOCK_HARDNESS[t] * 10.
+const TOOL_FIST = 0, TOOL_WOOD = 1, TOOL_STONE = 2, TOOL_COPPER = 3;
+const TOOL_DAMAGE = [2, 10, 20, 30];               // fist=0.2, wood=1, stone=2, copper=3
+const TOOL_NAMES = ['FISTS', 'WOODEN PICKAXE', 'STONE PICKAXE', 'COPPER PICKAXE'];
+// Recipes: index = tool id, null for fist (default).
+// ----- Build recipes — one unified menu for tools AND structures. -----
+// `tool` present → equip that tier instead of placing a world tile.
+const BUILD_RECIPES = [
+  { name: 'WOODEN PICKAXE', cost: [[WOOD, 10]],               tool: TOOL_WOOD   },
+  { name: 'STONE PICKAXE',  cost: [[STONE, 100]],             tool: TOOL_STONE  },
+  { name: 'COPPER PICKAXE', cost: [[COPPER_INGOT, 100]],      tool: TOOL_COPPER },
+  { name: 'FURNACE',        cost: [[STONE, 50]],              place: 'furnace'     },
+  { name: 'DIRT HOUSE',     cost: [[DIRT, 100], [WOOD, 10]],  place: 'dirtHouse'   },
+  { name: 'STONE HOUSE',    cost: [[STONE, 1000]],            place: 'stoneHouse'  },
+  { name: 'IRON DOOR',      cost: [[IRON_INGOT, 10]],         place: 'ironDoor'    },
+];
+
+// ----- Furnace tuning -----
+const TRANSFER_INTERVAL_TICKS = 8; // 1 unit every ~130ms at 60 TPS
+const SMELT_TIME_TICKS = 60;       // 1 second per ingot
+const FUEL_PER_SMELT = 1;          // 1 wood per ingot
+const FURNACE_MAX_FUEL = 16;
+
+// ----- Day/night tuning -----
+const DAY_LENGTH_TICKS = 10 * 60 * TICK_RATE; // 10 minutes
+const NIGHT_LENGTH_TICKS = 3 * TICK_RATE;     // 3-second transition
 
 const GRASS_COLOR = 0xff2c8845; // visual-only: dirt with air above
 
@@ -198,8 +242,28 @@ function create() {
 
   buildPlayerVisual(scene);
 
+  // Inventory / tools / crafting state.
+  scene.inventory = new Uint16Array(64);
+  scene.discovered = new Uint8Array(64);
+  scene.tool = TOOL_FIST;
+  scene.invDirty = true;
+  scene.furnaces = [];
+  scene.buildMenu = { open: false, cursor: 0, recipes: [], prevOnSurface: false };
+
+  // Day/night + home. Home defaults to spawn; updated when a house is built.
+  scene.dayTime = 0;
+  scene.nightActive = false;
+  scene.nightTicksRemaining = 0;
+  scene.home = { x: scene.player.x, y: scene.player.y };
+
+  buildHud(scene);
+
+  // Tiny debug HUD in the top-right corner.
   scene.hud = scene.add
-    .text(8, 6, '', { fontFamily: 'monospace', fontSize: '12px', color: '#ffffff' })
+    .text(GAME_WIDTH - 8, 6, '', {
+      fontFamily: 'monospace', fontSize: '10px', color: '#888888',
+    })
+    .setOrigin(1, 0)
     .setDepth(20);
 
   createControls(scene);
@@ -253,6 +317,28 @@ function generateWorld(w) {
   pocket(35,  IRON,   STONE, 120, 165, 2,  2);
   pocket(50,  AIR,    STONE, 75,  165, 4,  2);
   pocket(25,  AIR,    DIRT,  60,  72,  3,  1); // little caverns near surface
+
+  placeTrees(w, rnd);
+}
+
+function placeTrees(w, rnd) {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const tx = 10 + ((rnd() * (WORLD_W - 20)) | 0);
+    const surfY = findSurface(w, tx);
+    if (surfY < 30 || surfY >= WORLD_H - 1) continue;
+    if ((w[surfY * WORLD_W + tx] & TYPE_MASK) !== DIRT) continue;
+    // Require air above so we don't plant inside a cavern ceiling.
+    if (surfY < 4) continue;
+    if ((w[(surfY - 1) * WORLD_W + tx] & TYPE_MASK) !== AIR) continue;
+    const height = 4 + ((rnd() * 3) | 0); // 4..6
+    for (let h = 1; h <= height; h++) {
+      const y = surfY - h;
+      if (y < 1) break;
+      const idx = y * WORLD_W + tx;
+      if ((w[idx] & TYPE_MASK) !== AIR) break;
+      w[idx] = WOOD;
+    }
+  }
 }
 
 function blob(w, cx, cy, rx, ry, fill, only) {
@@ -299,6 +385,11 @@ function update(_time, delta) {
   // Render once per frame regardless of tick count.
   render(scene);
   updatePlayerVisual(scene);
+  if (scene.invDirty) {
+    refreshInventoryHud(scene);
+    scene.invDirty = false;
+  }
+  refreshDayTimer(scene);
 
   scene.hud.setText(
     `x ${scene.player.x | 0}  y ${scene.player.y | 0}  ` +
@@ -308,13 +399,35 @@ function update(_time, delta) {
 
 function runTick(scene) {
   handleInput(scene);
+  // Build menu pauses gameplay entirely.
+  if (scene.buildMenu.open) return;
+
+  // Night: brief non-interactive transition. Countdown only.
+  if (scene.nightActive) {
+    scene.nightTicksRemaining--;
+    if (scene.nightTicksRemaining <= 0) {
+      scene.nightActive = false;
+      scene.dayTime = 0;
+      scene.nightOverlay.setVisible(false);
+      showToast(scene, 'DAY BREAKS!');
+    }
+    return;
+  }
+
   movePlayer(scene);
   simulateViewport(scene);
   if (scene.dirtyMineral) {
     resolveMineralStability(scene);
     scene.dirtyMineral = false;
   }
+  tickFurnaces(scene);
   updateCamera(scene);
+
+  // Tick the day clock. When the day is over, force the player home.
+  scene.dayTime++;
+  if (scene.dayTime >= DAY_LENGTH_TICKS) {
+    goHome(scene);
+  }
 }
 
 // ============================================================
@@ -542,23 +655,53 @@ function resolveMineralStability(scene) {
 
 function handleInput(scene) {
   const c = scene.controls;
+
+  // Build menu absorbs all input while open — gameplay pauses via runTick.
+  if (scene.buildMenu.open) {
+    handleBuildMenuInput(scene);
+    return;
+  }
+
+  // Night is non-interactive (brief transition).
+  if (scene.nightActive) {
+    c.pressed.P1_1 = false; c.pressed.P1_2 = false;
+    c.pressed.P1_3 = false; c.pressed.P1_U = false;
+    return;
+  }
+
+  // P1_2 (I) toggles the build menu — any position.
+  if (c.pressed.P1_2) {
+    c.pressed.P1_2 = false;
+    openBuildMenu(scene);
+    scene.player.vx = 0;
+    return;
+  }
+
+  // P1_3 (O) teleports player home and starts night.
+  if (c.pressed.P1_3) {
+    c.pressed.P1_3 = false;
+    goHome(scene);
+    return;
+  }
+
   let vx = 0;
   if (c.held.P1_L) vx -= 1;
   if (c.held.P1_R) vx += 1;
   scene.player.vx = vx * MOVE_SPEED;
   if (vx !== 0) scene.facing = vx;
 
-  // Jump (P1_1 button or joystick UP, edge-triggered)
-  if ((c.pressed.P1_1 || c.pressed.P1_U) && scene.player.onGround) {
+  // Jump — joystick UP only (P1_U / W). P1_1 is now the mine button.
+  if (c.pressed.P1_U && scene.player.onGround) {
     scene.player.vy = JUMP_VELOCITY;
     scene.player.onGround = false;
   }
-  c.pressed.P1_1 = false;
   c.pressed.P1_U = false;
 
-  // Mine — one hit per press. Direction from joystick, fallback to facing.
-  if (c.pressed.P1_2) {
-    c.pressed.P1_2 = false;
+  // Mine (P1_1 / U / space) — one hit per press. Direction from joystick,
+  // fallback to facing. Note: P1_U is sampled via `held` here, not
+  // `pressed`, because we already consumed the press for jump.
+  if (c.pressed.P1_1) {
+    c.pressed.P1_1 = false;
     let dx = 0, dy = 0;
     if (c.held.P1_D)      dy = 1;
     else if (c.held.P1_U) dy = -1;
@@ -629,11 +772,19 @@ function tryMine(scene, dx, dy) {
     scene.mineDx = dx;
     scene.mineDy = dy;
 
-    damage[idx]++;
+    // Hardness is already stored in damage units (matches TOOL_DAMAGE).
+    damage[idx] = Math.min(255, damage[idx] + TOOL_DAMAGE[scene.tool]);
     if (damage[idx] >= hard) {
       w[idx] = AIR;
       damage[idx] = 0;
-      scene.dirtyMineral = true; // re-evaluate stability
+      scene.dirtyMineral = true;
+      // Drop into inventory + discovery toast.
+      scene.inventory[t]++;
+      if (!scene.discovered[t]) {
+        scene.discovered[t] = 1;
+        showToast(scene, BLOCK_NAME[t].toUpperCase() + '!');
+      }
+      scene.invDirty = true;
     }
     return true;
   }
@@ -710,8 +861,15 @@ function collidesPlayer(scene, p) {
 }
 
 function isSolidCell(cell) {
-  const cat = BLOCK_CAT[cell & TYPE_MASK];
+  const t = cell & TYPE_MASK;
+  if (t === IRON_DOOR) return false; // player walks through their door
+  const cat = BLOCK_CAT[t];
   return cat !== CAT_AIR && cat !== CAT_LIQUID;
+}
+
+function playerOnSurface(scene) {
+  // True when the player is near the top of the world (above the stone band).
+  return scene.player.y < 90 * TILE;
 }
 
 // Returns the slowest (max) fallTicks of any liquid tile overlapping the
@@ -760,6 +918,11 @@ function clamp(v, a, b) {
 // ============================================================
 
 function render(scene) {
+  // Paint the sky by overriding AIR's color each frame. The day/night cycle
+  // blends amber sunrise → sky blue → sunset orange; the night overlay on
+  // top darkens everything further when `nightActive`.
+  BLOCK_COLOR[AIR] = getSkyColor(scene);
+
   const w = scene.world;
   const damage = scene.damage;
   const px = scene.pixels;
@@ -791,12 +954,14 @@ function render(scene) {
         color = GRASS_COLOR;
       }
 
-      // Damage tint: darken proportional to damage/hardness.
+      // Damage tint: darken proportional to damage / hardness (both in
+      // damage units).
       const dmg = damage[idx];
       if (dmg > 0) {
         const hard = BLOCK_HARDNESS[t];
         if (hard > 0) {
-          const factor = 1 - 0.45 * dmg / hard;
+          let factor = 1 - 0.45 * dmg / hard;
+          if (factor < 0) factor = 0;
           const b = (((color >>> 16) & 0xff) * factor) | 0;
           const g = (((color >>> 8) & 0xff) * factor) | 0;
           const r = ((color & 0xff) * factor) | 0;
@@ -934,6 +1099,455 @@ function updatePlayerVisual(scene) {
     parts.pickHandle.visible = false;
     parts.pickHead.visible = false;
   }
+}
+
+// ============================================================
+// 10.5. Inventory, tools, build menu, furnace
+// ============================================================
+
+function colorToRgb(abgr) {
+  const b = (abgr >>> 16) & 0xff;
+  const g = (abgr >>> 8) & 0xff;
+  const r = abgr & 0xff;
+  return (r << 16) | (g << 8) | b;
+}
+
+// Sky color driven by day progress. 0 = amber sunrise, 0.5 = sky blue,
+// 1 = sunset orange. Returned as packed 0xAABBGGRR for ImageData writes.
+function getSkyColor(scene) {
+  const t = scene.nightActive
+    ? 1
+    : Math.min(1, scene.dayTime / DAY_LENGTH_TICKS);
+  // Keyframes with a long blue "plateau" in the middle so most of the
+  // day is clearly sky-blue; sunrise/sunset are short bookends that ease
+  // IN and OUT of the plateau via smoothstep (cubic) so the merge feels
+  // gradual instead of snapping at the boundary.
+  //   0.0        sunrise yellow (255, 230, 130)
+  //   0.2 – 0.8  midday  blue   (185, 220, 255)
+  //   1.0        sunset  orange (255, 170, 100)
+  let r, g, b;
+  if (t < 0.2) {
+    const raw = t / 0.2;
+    const k = raw * raw * (3 - 2 * raw); // smoothstep
+    r = (255 + (185 - 255) * k) | 0;
+    g = (230 + (220 - 230) * k) | 0;
+    b = (130 + (255 - 130) * k) | 0;
+  } else if (t < 0.8) {
+    r = 185; g = 220; b = 255;
+  } else {
+    const raw = (t - 0.8) / 0.2;
+    const k = raw * raw * (3 - 2 * raw); // smoothstep
+    r = (185 + (255 - 185) * k) | 0;
+    g = (220 + (170 - 220) * k) | 0;
+    b = (255 + (100 - 255) * k) | 0;
+  }
+  return (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
+}
+
+function buildHud(scene) {
+  scene.toolText = scene.add
+    .text(8, 6, 'TOOL: ' + TOOL_NAMES[TOOL_FIST], {
+      fontFamily: 'monospace', fontSize: '12px', color: '#ffe066', fontStyle: 'bold',
+    })
+    .setDepth(20);
+
+  scene.dayText = scene.add
+    .text(8, 22, '', {
+      fontFamily: 'monospace', fontSize: '11px', color: '#a0c8ff',
+    })
+    .setDepth(20);
+
+  scene.invHud = { container: scene.add.container(8, 40).setDepth(20), rows: [] };
+
+  scene.toastText = scene.add
+    .text(GAME_WIDTH / 2, GAME_HEIGHT / 3, '', {
+      fontFamily: 'monospace', fontSize: '48px', color: '#ffe066', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 4, align: 'center',
+    })
+    .setOrigin(0.5)
+    .setDepth(50)
+    .setAlpha(0);
+
+  // Night overlay — dark semi-transparent rectangle over the whole canvas.
+  scene.nightOverlay = scene.add
+    .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000020, 0.8)
+    .setDepth(35)
+    .setVisible(false);
+
+  buildBuildMenuUi(scene);
+}
+
+function refreshDayTimer(scene) {
+  if (scene.nightActive) {
+    scene.dayText.setText('NIGHT');
+    scene.dayText.setColor('#8888ff');
+    return;
+  }
+  const remainingTicks = Math.max(0, DAY_LENGTH_TICKS - scene.dayTime);
+  const totalSec = remainingTicks / TICK_RATE;
+  const mm = Math.floor(totalSec / 60);
+  const ss = Math.floor(totalSec % 60);
+  scene.dayText.setText('DAY ' + mm + ':' + (ss < 10 ? '0' : '') + ss);
+  scene.dayText.setColor('#a0c8ff');
+}
+
+function goHome(scene) {
+  scene.player.x = scene.home.x;
+  scene.player.y = scene.home.y;
+  scene.player.vx = 0;
+  scene.player.vy = 0;
+  scene.nightActive = true;
+  scene.nightTicksRemaining = NIGHT_LENGTH_TICKS;
+  scene.nightOverlay.setVisible(true);
+  showToast(scene, 'NIGHT!');
+  updateCamera(scene);
+}
+
+function refreshInventoryHud(scene) {
+  const inv = scene.inventory;
+  const rows = scene.invHud.rows;
+  let row = 0;
+  for (let id = 1; id < 64; id++) {
+    const count = inv[id];
+    if (count <= 0) continue;
+    let r = rows[row];
+    if (!r) {
+      const icon = scene.add.rectangle(0, row * 14, 10, 10, 0).setOrigin(0).setDepth(20);
+      const text = scene.add
+        .text(14, row * 14 - 1, '', {
+          fontFamily: 'monospace', fontSize: '11px', color: '#ffffff',
+        })
+        .setDepth(20);
+      scene.invHud.container.add(icon);
+      scene.invHud.container.add(text);
+      r = { icon, text };
+      rows.push(r);
+    }
+    r.icon.fillColor = colorToRgb(BLOCK_COLOR[id]);
+    r.icon.visible = true;
+    r.text.setText(`${BLOCK_NAME[id].toUpperCase()}  ${count}`);
+    r.text.visible = true;
+    row++;
+  }
+  for (let i = row; i < rows.length; i++) {
+    rows[i].icon.visible = false;
+    rows[i].text.visible = false;
+  }
+  scene.toolText.setText('TOOL: ' + TOOL_NAMES[scene.tool]);
+}
+
+function showToast(scene, text) {
+  scene.toastText.setText(text);
+  scene.toastText.setAlpha(1);
+  scene.tweens.killTweensOf(scene.toastText);
+  scene.tweens.add({
+    targets: scene.toastText,
+    alpha: 0,
+    duration: 1500,
+    delay: 800,
+  });
+}
+
+// ----- Build menu -----
+
+function buildBuildMenuUi(scene) {
+  const c = scene.add.container(0, 0).setDepth(40);
+  c.setVisible(false);
+  scene.buildMenuContainer = c;
+
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.75));
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 440, 320, 0x1a2238).setStrokeStyle(2, 0xffe066));
+
+  c.add(
+    scene.add.text(GAME_WIDTH / 2, 170, 'BUILD', {
+      fontFamily: 'monospace', fontSize: '28px', color: '#ffe066', fontStyle: 'bold',
+    }).setOrigin(0.5),
+  );
+
+  scene.buildMenuRows = [];
+  for (let i = 0; i < BUILD_RECIPES.length; i++) {
+    const row = {};
+    const y = 220 + i * 32;
+    row.bg = scene.add.rectangle(GAME_WIDTH / 2, y, 400, 26, 0x2a3555, 0).setOrigin(0.5);
+    row.text = scene.add.text(GAME_WIDTH / 2 - 180, y, '', {
+      fontFamily: 'monospace', fontSize: '14px', color: '#ffffff',
+    }).setOrigin(0, 0.5);
+    c.add(row.bg);
+    c.add(row.text);
+    scene.buildMenuRows.push(row);
+  }
+
+  c.add(
+    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 170,
+      'JOYSTICK UP/DOWN - P1_3 CONFIRM - START CLOSE', {
+      fontFamily: 'monospace', fontSize: '10px', color: '#a0a8b0',
+    }).setOrigin(0.5),
+  );
+}
+
+function openBuildMenu(scene) {
+  scene.buildMenu.open = true;
+  scene.buildMenu.cursor = 0;
+  scene.buildMenuContainer.setVisible(true);
+  refreshBuildMenu(scene);
+}
+
+function closeBuildMenu(scene) {
+  scene.buildMenu.open = false;
+  scene.buildMenuContainer.setVisible(false);
+}
+
+function refreshBuildMenu(scene) {
+  const inv = scene.inventory;
+  for (let i = 0; i < BUILD_RECIPES.length; i++) {
+    const recipe = BUILD_RECIPES[i];
+    const row = scene.buildMenuRows[i];
+    let canAfford = true;
+    let costStr = '';
+    for (let k = 0; k < recipe.cost.length; k++) {
+      const [id, amt] = recipe.cost[k];
+      if (inv[id] < amt) canAfford = false;
+      costStr += (k > 0 ? ' + ' : '') + amt + ' ' + BLOCK_NAME[id].toUpperCase();
+    }
+    row.text.setText(recipe.name.padEnd(14) + costStr);
+    row.text.setColor(canAfford ? '#ffffff' : '#7a7a82');
+    const selected = i === scene.buildMenu.cursor;
+    row.bg.setFillStyle(0x2a3555, selected ? 0.9 : 0);
+    row.bg.setStrokeStyle(selected ? 2 : 0, 0xffe066);
+  }
+}
+
+function handleBuildMenuInput(scene) {
+  const c = scene.controls;
+  // I (P1_2) or START toggle the menu closed.
+  if (c.pressed.P1_2 || c.pressed.START1) {
+    c.pressed.P1_2 = false;
+    c.pressed.START1 = false;
+    closeBuildMenu(scene);
+    return;
+  }
+  if (c.pressed.P1_U) {
+    c.pressed.P1_U = false;
+    scene.buildMenu.cursor = (scene.buildMenu.cursor - 1 + BUILD_RECIPES.length) % BUILD_RECIPES.length;
+    refreshBuildMenu(scene);
+  }
+  if (c.pressed.P1_D) {
+    c.pressed.P1_D = false;
+    scene.buildMenu.cursor = (scene.buildMenu.cursor + 1) % BUILD_RECIPES.length;
+    refreshBuildMenu(scene);
+  }
+  // U (P1_1) confirms.
+  if (c.pressed.P1_1) {
+    c.pressed.P1_1 = false;
+    confirmBuildRecipe(scene);
+  }
+  // Consume other pressed controls so they don't bleed into gameplay on close.
+  c.pressed.P1_3 = false;
+  c.pressed.P1_L = false;
+  c.pressed.P1_R = false;
+}
+
+function confirmBuildRecipe(scene) {
+  const recipe = BUILD_RECIPES[scene.buildMenu.cursor];
+  const inv = scene.inventory;
+  for (const [id, amt] of recipe.cost) {
+    if (inv[id] < amt) {
+      showToast(scene, 'NOT ENOUGH!');
+      return;
+    }
+  }
+
+  // Tool recipe → equip instead of placing.
+  if (recipe.tool != null) {
+    if (scene.tool >= recipe.tool) {
+      showToast(scene, 'ALREADY HAVE IT!');
+      return;
+    }
+    for (const [id, amt] of recipe.cost) inv[id] -= amt;
+    scene.tool = recipe.tool;
+    scene.invDirty = true;
+    showToast(scene, recipe.name + '!');
+    closeBuildMenu(scene);
+    return;
+  }
+
+  // Structure recipe → place.
+  const placed = placeRecipe(scene, recipe.place);
+  if (!placed) {
+    showToast(scene, 'NO SPACE!');
+    return;
+  }
+  for (const [id, amt] of recipe.cost) inv[id] -= amt;
+  scene.invDirty = true;
+  scene.dirtyMineral = true; // new MAGIC tiles can anchor mineral chains
+  showToast(scene, recipe.name + ' PLACED!');
+  closeBuildMenu(scene);
+}
+
+function placeRecipe(scene, kind) {
+  if (kind === 'furnace')    return placeFurnace(scene);
+  if (kind === 'dirtHouse')  return placeHouse(scene, 6, 4, DIRT);
+  if (kind === 'stoneHouse') return placeHouse(scene, 8, 5, STONE);
+  if (kind === 'ironDoor')   return placeIronDoor(scene);
+  return false;
+}
+
+function placeFurnace(scene) {
+  // 2×2 anchored on the 2-wide footprint below the player's feet.
+  const p = scene.player;
+  const ptxL = Math.round(p.x / TILE) - 1;
+  const ptxR = ptxL + 1;
+  const ptyB = ((p.y - 0.001) / TILE) | 0;
+  const targets = [
+    [ptxL, ptyB - 1], [ptxR, ptyB - 1],
+    [ptxL, ptyB],     [ptxR, ptyB],
+  ];
+  for (const [tx, ty] of targets) {
+    if (tx < 1 || tx >= WORLD_W - 1 || ty < 1 || ty >= WORLD_H - 1) return false;
+    const idx = ty * WORLD_W + tx;
+    const cat = BLOCK_CAT[scene.world[idx] & TYPE_MASK];
+    if (cat !== CAT_AIR) return false;
+  }
+  for (const [tx, ty] of targets) {
+    scene.world[ty * WORLD_W + tx] = FURNACE;
+  }
+  scene.furnaces.push({
+    cx: ptxL, cy: ptyB - 1, // top-left of the 2×2
+    input: new Uint16Array(2),  // [copper, iron]
+    fuel: 0,
+    output: new Uint16Array(2), // [copper ingot, iron ingot]
+    smeltIdx: -1,
+    smeltProgress: 0,
+  });
+  return true;
+}
+
+function placeHouse(scene, w, h, wallType) {
+  const p = scene.player;
+  const centerTx = Math.round(p.x / TILE);
+  const bottomTy = ((p.y - 0.001) / TILE) | 0;
+  const x0 = centerTx - (w >> 1);
+  const x1 = x0 + w - 1;
+  const y1 = bottomTy;
+  const y0 = y1 - (h - 1);
+  // Check bounds.
+  if (x0 < 1 || x1 >= WORLD_W - 1 || y0 < 1 || y1 >= WORLD_H - 1) return false;
+  // Place walls (perimeter only). Leave a 1×2 doorway on the facing side.
+  const doorX = scene.facing < 0 ? x0 : x1;
+  const doorTopY = y1 - 1;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const onBorder = x === x0 || x === x1 || y === y0 || y === y1;
+      if (!onBorder) continue;
+      // Doorway: skip two tiles on the facing wall at foot + torso level.
+      if (x === doorX && (y === y1 || y === doorTopY)) continue;
+      const idx = y * WORLD_W + x;
+      const cat = BLOCK_CAT[scene.world[idx] & TYPE_MASK];
+      if (cat === CAT_MAGIC) return false; // can't overwrite magic (borders, other bases)
+      scene.world[idx] = wallType;
+    }
+  }
+  // Register home at the floor-center of the new house so night teleports
+  // land the player standing on the house's ground.
+  scene.home.x = ((x0 + x1) / 2 + 0.5) * TILE;
+  scene.home.y = y1 * TILE;
+  return true;
+}
+
+function placeIronDoor(scene) {
+  const p = scene.player;
+  const ptyM = ((p.y - p.h / 2) / TILE) | 0;
+  const ptyB = ((p.y - 0.001) / TILE) | 0;
+  const ptxL = Math.round(p.x / TILE) - 1;
+  const ptxR = ptxL + 1;
+  const col = scene.facing < 0 ? ptxL - 1 : ptxR + 1;
+  // Place two door tiles (torso + feet) so you can walk through.
+  const targets = [[col, ptyM], [col, ptyB]];
+  for (const [tx, ty] of targets) {
+    if (tx < 1 || tx >= WORLD_W - 1 || ty < 1 || ty >= WORLD_H - 1) return false;
+    const idx = ty * WORLD_W + tx;
+    if (BLOCK_CAT[scene.world[idx] & TYPE_MASK] !== CAT_AIR) return false;
+  }
+  for (const [tx, ty] of targets) {
+    scene.world[ty * WORLD_W + tx] = IRON_DOOR;
+  }
+  return true;
+}
+
+// ----- Furnace tick (smelt + proximity transfer) -----
+
+function tickFurnaces(scene) {
+  const n = scene.furnaces.length;
+  if (n === 0) return;
+  const tick = scene.tickCount;
+  for (let fi = 0; fi < n; fi++) {
+    const f = scene.furnaces[fi];
+    // 1) Smelt progress (independent of proximity).
+    if (f.smeltIdx < 0) {
+      for (let i = 0; i < 2; i++) {
+        if (f.input[i] > 0 && f.fuel >= FUEL_PER_SMELT) {
+          f.smeltIdx = i;
+          f.smeltProgress = 0;
+          break;
+        }
+      }
+    }
+    if (f.smeltIdx >= 0) {
+      f.smeltProgress++;
+      if (f.smeltProgress >= SMELT_TIME_TICKS) {
+        f.input[f.smeltIdx]--;
+        f.fuel -= FUEL_PER_SMELT;
+        f.output[f.smeltIdx]++;
+        f.smeltIdx = -1;
+      }
+    }
+
+    // 2) Proximity transfer: only when player is near AND on the right tick.
+    if (!nearFurnace(scene, f)) continue;
+    if (tick % TRANSFER_INTERVAL_TICKS !== 0) continue;
+
+    // Prefer: pull ores → pull fuel → push ingots back.
+    const inv = scene.inventory;
+    let moved = false;
+    // Ores: copper (idx 0), iron (idx 1)
+    const oreTypes = [COPPER, IRON];
+    for (let i = 0; i < 2 && !moved; i++) {
+      if (inv[oreTypes[i]] > 0) {
+        inv[oreTypes[i]]--;
+        f.input[i]++;
+        moved = true;
+      }
+    }
+    if (!moved && inv[WOOD] > 0 && f.fuel < FURNACE_MAX_FUEL) {
+      inv[WOOD]--;
+      f.fuel++;
+      moved = true;
+    }
+    if (!moved) {
+      const ingotTypes = [COPPER_INGOT, IRON_INGOT];
+      for (let i = 0; i < 2 && !moved; i++) {
+        if (f.output[i] > 0) {
+          f.output[i]--;
+          inv[ingotTypes[i]]++;
+          if (!scene.discovered[ingotTypes[i]]) {
+            scene.discovered[ingotTypes[i]] = 1;
+            showToast(scene, BLOCK_NAME[ingotTypes[i]].toUpperCase() + '!');
+          }
+          moved = true;
+        }
+      }
+    }
+    if (moved) scene.invDirty = true;
+  }
+}
+
+function nearFurnace(scene, f) {
+  // Player vs. the 2×2 cluster's center point.
+  const fcx = (f.cx + 1) * TILE;
+  const fcy = (f.cy + 1) * TILE;
+  const dx = Math.abs(scene.player.x - fcx);
+  const dy = Math.abs(scene.player.y - fcy);
+  return dx < 3 * TILE && dy < 3 * TILE;
 }
 
 // ============================================================
