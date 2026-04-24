@@ -85,30 +85,30 @@ const BLOCKS = [
   { id: COPPER_INGOT, name: 'copper ingot', cat: CAT_AIR,     color: 0xff2a8ad8, fallTicks: 0,  hardness: 0 },
   { id: IRON_INGOT,   name: 'iron ingot',   cat: CAT_AIR,     color: 0xffc8d4de, fallTicks: 0,  hardness: 0 },
   // Placeable structures (magic, unbreakable in v3).
-  { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC,   color: 0xff3a3a40, fallTicks: 0,  hardness: 30, dropType: STONE,        dropAmount: 40 },
+  { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC,   color: 0xff3a3a40, fallTicks: 0,  hardness: 200, dropType: STONE,        dropAmount: 40 },
   { id: IRON_DOOR,    name: 'iron door',    cat: CAT_MAGIC,   color: 0xffa0a8b4, fallTicks: 0,  hardness: 0 },
   // Decor — cosmetic only, pass-through, not mineable.
   { id: LEAVES,       name: 'leaves',       cat: CAT_DECOR,   color: 0xff4aa040, fallTicks: 0,  hardness: 0 },
   { id: CLOUD,        name: 'cloud',        cat: CAT_DECOR,   color: 0xffe8eef0, fallTicks: 0,  hardness: 0 },
   // Placed-building tiles. CAT_MAGIC keeps them from falling and lets
-  // them anchor mineral chains, but they ARE mineable: hardness matches
-  // the raw material's hardness and mining returns the original material
-  // (a placed brick gives 10 of its raw material back).
-  { id: BRICK_DIRT,   name: 'dirt brick',   cat: CAT_MAGIC,   color: 0xff3a5880, fallTicks: 0,  hardness: 10, dropType: DIRT,         dropAmount: 10 },
-  { id: BRICK_STONE,  name: 'stone brick',  cat: CAT_MAGIC,   color: 0xff8a8a90, fallTicks: 0,  hardness: 20, dropType: STONE,        dropAmount: 10 },
-  { id: BRICK_COPPER, name: 'copper brick', cat: CAT_MAGIC,   color: 0xff3a8ad8, fallTicks: 0,  hardness: 40, dropType: COPPER_INGOT, dropAmount: 10 },
-  { id: BRICK_IRON,   name: 'iron brick',   cat: CAT_MAGIC,   color: 0xff708090, fallTicks: 0,  hardness: 60, dropType: IRON_INGOT,   dropAmount: 10 },
-  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC,   color: 0xff2a5088, fallTicks: 0,  hardness: 4,  dropType: WOOD,         dropAmount: 10 },
-  { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC,   color: 0xff3478b0, fallTicks: 0,  hardness: 4,  dropType: WOOD,         dropAmount: 10 },
-  { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC,   color: 0xff4050c0, fallTicks: 0,  hardness: 4,  dropType: WOOD,         dropAmount: 10 },
-  { id: BED_IRON,     name: 'iron bed',     cat: CAT_MAGIC,   color: 0xff606890, fallTicks: 0,  hardness: 60, dropType: IRON_INGOT,   dropAmount: 10 },
+  // them anchor mineral chains, but they ARE mineable: each brick is 10
+  // raw units fused, so its hardness is `raw hardness × 10` (breaks take
+  // 10× what a single raw tile would). Drops return the original × 10.
+  { id: BRICK_DIRT,   name: 'dirt brick',   cat: CAT_MAGIC,   color: 0xff3a5880, fallTicks: 0,  hardness: 100, dropType: DIRT,         dropAmount: 10 },
+  { id: BRICK_STONE,  name: 'stone brick',  cat: CAT_MAGIC,   color: 0xff8a8a90, fallTicks: 0,  hardness: 200, dropType: STONE,        dropAmount: 10 },
+  { id: BRICK_COPPER, name: 'copper brick', cat: CAT_MAGIC,   color: 0xff3a8ad8, fallTicks: 0,  hardness: 400, dropType: COPPER_INGOT, dropAmount: 10 },
+  { id: BRICK_IRON,   name: 'iron brick',   cat: CAT_MAGIC,   color: 0xff708090, fallTicks: 0,  hardness: 600, dropType: IRON_INGOT,   dropAmount: 10 },
+  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC,   color: 0xff2a5088, fallTicks: 0,  hardness: 40,  dropType: WOOD,         dropAmount: 10 },
+  { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC,   color: 0xff3478b0, fallTicks: 0,  hardness: 40,  dropType: WOOD,         dropAmount: 10 },
+  { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC,   color: 0xff4050c0, fallTicks: 0,  hardness: 40,  dropType: WOOD,         dropAmount: 10 },
+  { id: BED_IRON,     name: 'iron bed',     cat: CAT_MAGIC,   color: 0xff606890, fallTicks: 0,  hardness: 600, dropType: IRON_INGOT,   dropAmount: 10 },
 ];
 
 // Flat lookup tables for the hot path. 64-slot capacity (TYPE_MASK + 1).
 const BLOCK_CAT = new Uint8Array(64);
 const BLOCK_COLOR = new Uint32Array(64);
 const BLOCK_FALL_TICKS = new Uint8Array(64);
-const BLOCK_HARDNESS = new Uint8Array(64);
+const BLOCK_HARDNESS = new Uint16Array(64); // up to 600 (iron brick)
 const BLOCK_DROP_TYPE = new Uint8Array(64);
 const BLOCK_DROP_AMOUNT = new Uint16Array(64);
 const BLOCK_NAME = new Array(64);
@@ -187,6 +187,19 @@ const FURNACE_MAX_FUEL = 16;
 const DAY_BASE_SECONDS = 120;
 const DAY_INCREMENT_SECONDS = 10;
 
+// ----- Tutorial steps -----
+// Step 0 = no banner, steps 1..4 each display a single line of guidance
+// that auto-advances when a condition is met. Step 5 hides the banner.
+const TUTORIAL_STEPS = [
+  '',
+  'GO TO A TREE AND HIT IT WITH U A FEW TIMES',
+  'NICE! GET 10 WOOD TOTAL',
+  'OPEN THE MENU WITH I AND CRAFT THE WOODEN PICKAXE',
+  'GATHER MATERIALS FOR YOUR BASE - MONSTERS COME AT NIGHT\nCRAFT A SWORD OR BUILD WALLS. GOOD LUCK!',
+  '',
+];
+const TUTORIAL_FINAL_HOLD_TICKS = 8 * TICK_RATE;
+
 // ----- Leaf decay -----
 // Leaves not connected (via WOOD + LEAVES chain) to a trunk wither away.
 // The BFS runs every LEAF_SCAN_INTERVAL ticks; each disconnected leaf
@@ -203,9 +216,87 @@ const PLAYER_FLASH_TICKS = 24;      // blink duration after any damage source
 const PLAYER_INVULN_TICKS = 30;     // grace period from monster contact
 
 // ----- Monsters -----
-const MON_SLIME = 0, MON_ZOMBIE = 1, MON_FLYER = 2;
+const MON_SLIME = 0, MON_ZOMBIE = 1, MON_FLYER = 2,
+      MON_GHOST = 3, MON_BOMBER = 4;
 const MONSTER_SPAWN_INTERVAL = 90;  // attempt a spawn every 1.5s
 const MONSTER_MAX = 10;
+
+// Stuck escalation — if a monster tries to move but hasn't made
+// progress for STUCK_THRESHOLD_TICKS, it gets a bigger jump and is
+// allowed to chew through natural tiles (see monsterAttackTiles).
+const STUCK_THRESHOLD_TICKS = 30;
+const STUCK_JUMP_VELOCITY = -5.0; // peak ≈ 6.9 tiles, clears most walls
+
+// Per-type definitions. Adding a new monster = one row here + one case
+// in buildMonsterVisual + (if a new aiMode/behavior) one branch in
+// tickMonster. aiMode: 'ground' | 'glide' (future: 'teleport').
+//   jumpTrigger: 'timer' | 'blocked' | 'none'.
+//   walkSpeed / airSpeed: horizontal velocity on ground / airborne.
+//   receivesKnockback: set false for ghost-like foes that should ignore
+//     sword impact velocity.
+//   canAttackTiles + attackDamage: chip rate against structures.
+const MONSTER_DEFS = {
+  [MON_SLIME]: {
+    w: 12, h: 8, hp: 12,
+    aiMode: 'ground',
+    walkSpeed: 0, airSpeed: 1.2,     // sits on ground, arcs in the air
+    jumpVelocity: -3.5,
+    jumpTrigger: 'timer',
+    jumpTimerMin: 30, jumpTimerMax: 60,
+    hasGravity: true, ignoresCollision: false,
+    canAttackTiles: true, attackDamage: 3,
+    contactDamage: 1,
+    receivesKnockback: true,
+  },
+  [MON_ZOMBIE]: {
+    w: 12, h: 22, hp: 30,
+    aiMode: 'ground',
+    walkSpeed: 0.6, airSpeed: 0.6,   // pushes toward player every tick
+    jumpVelocity: -4.2,
+    jumpTrigger: 'blocked',
+    hasGravity: true, ignoresCollision: false,
+    canAttackTiles: true, attackDamage: 5,
+    contactDamage: 2,
+    receivesKnockback: true,
+  },
+  [MON_FLYER]: {
+    // Now collides with blocks (used to phase through). Frees the
+    // "ignores walls" niche for the ghost.
+    w: 14, h: 8, hp: 6,
+    aiMode: 'glide',
+    glideSpeed: 0.8,
+    hasGravity: false, ignoresCollision: false,
+    canAttackTiles: true, attackDamage: 3,
+    contactDamage: 1,
+    receivesKnockback: true,
+  },
+  [MON_GHOST]: {
+    // Etereal: phases through walls, immune to knockback.
+    w: 12, h: 14, hp: 10,
+    aiMode: 'glide',
+    glideSpeed: 0.55,
+    hasGravity: false, ignoresCollision: true,
+    canAttackTiles: false,
+    contactDamage: 2,
+    receivesKnockback: false,
+  },
+  [MON_BOMBER]: {
+    // Creeper-style: walks up to the player, fuses, explodes.
+    w: 12, h: 14, hp: 10,
+    aiMode: 'ground',
+    walkSpeed: 0.4, airSpeed: 0.4,
+    jumpVelocity: -4.0, jumpTrigger: 'blocked',
+    hasGravity: true, ignoresCollision: false,
+    canAttackTiles: false,       // does not chip structures — explodes
+    contactDamage: 0,            // damage is the blast, not the touch
+    receivesKnockback: true,
+    explodesOnProximity: true,
+    explosionRange: 2.2 * TILE,  // distance (px) at which fuse starts
+    explosionRadius: 3,          // destruction radius in tiles
+    explosionDamage: 5,          // HP dealt to player if in radius
+    fuseTicks: 45,               // 0.75 s of flashing before boom
+  },
+};
 
 const GRASS_COLOR = 0xff2c8845; // visual-only: dirt with air above
 
@@ -278,7 +369,7 @@ function create() {
   // many hits a tile has taken; reset when the cell becomes AIR.
   // leafDecay counts scans a leaf has been disconnected from any trunk.
   scene.world = new Uint8Array(WORLD_W * WORLD_H);
-  scene.damage = new Uint8Array(WORLD_W * WORLD_H);
+  scene.damage = new Uint16Array(WORLD_W * WORLD_H); // up to 600 for iron brick
   scene.leafDecay = new Uint8Array(WORLD_W * WORLD_H);
 
   generateWorld(scene.world);
@@ -430,35 +521,56 @@ function generateWorld(w) {
   placeTrees(w, rnd);
 }
 
+// Plant a single tree at column `tx`. Returns true on success. Shared
+// by the initial generation pass and by regrowTrees at dawn.
+function plantTree(w, rnd, tx) {
+  const surfY = findSurface(w, tx);
+  if (surfY < 30 || surfY >= WORLD_H - 1) return false;
+  if ((w[surfY * WORLD_W + tx] & TYPE_MASK) !== DIRT) return false;
+  // Require air above so we don't plant inside a cavern ceiling.
+  if (surfY < 4) return false;
+  if ((w[(surfY - 1) * WORLD_W + tx] & TYPE_MASK) !== AIR) return false;
+  const height = 4 + ((rnd() * 3) | 0); // 4..6
+  let topY = surfY - height;
+  for (let h = 1; h <= height; h++) {
+    const y = surfY - h;
+    if (y < 1) { topY = y + 1; break; }
+    const idx = y * WORLD_W + tx;
+    if ((w[idx] & TYPE_MASK) !== AIR) { topY = y + 1; break; }
+    w[idx] = WOOD;
+  }
+  // Canopy of LEAVES: 5-wide rounded blob at the top of the trunk.
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      if (Math.abs(dx) === 2 && dy !== 0) continue; // round corners
+      const cx = tx + dx;
+      const cy = topY + dy;
+      if (cx < 1 || cx >= WORLD_W - 1 || cy < 1) continue;
+      const idx = cy * WORLD_W + cx;
+      if ((w[idx] & TYPE_MASK) === AIR) w[idx] = LEAVES;
+    }
+  }
+  return true;
+}
+
 function placeTrees(w, rnd) {
   for (let attempt = 0; attempt < 60; attempt++) {
+    plantTree(w, rnd, 10 + ((rnd() * (WORLD_W - 20)) | 0));
+  }
+}
+
+// At dawn, sprinkle a handful of fresh trees so monster chew doesn't
+// deforest the map over a few days.
+function regrowTrees(scene, count) {
+  let seed = ((scene.tickCount + scene.daysSurvived * 9973) * 0x9e3779b1) >>> 0;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  let planted = 0;
+  for (let a = 0; a < count * 8 && planted < count; a++) {
     const tx = 10 + ((rnd() * (WORLD_W - 20)) | 0);
-    const surfY = findSurface(w, tx);
-    if (surfY < 30 || surfY >= WORLD_H - 1) continue;
-    if ((w[surfY * WORLD_W + tx] & TYPE_MASK) !== DIRT) continue;
-    // Require air above so we don't plant inside a cavern ceiling.
-    if (surfY < 4) continue;
-    if ((w[(surfY - 1) * WORLD_W + tx] & TYPE_MASK) !== AIR) continue;
-    const height = 4 + ((rnd() * 3) | 0); // 4..6
-    let topY = surfY - height;
-    for (let h = 1; h <= height; h++) {
-      const y = surfY - h;
-      if (y < 1) { topY = y + 1; break; }
-      const idx = y * WORLD_W + tx;
-      if ((w[idx] & TYPE_MASK) !== AIR) { topY = y + 1; break; }
-      w[idx] = WOOD;
-    }
-    // Canopy of LEAVES: 5-wide rounded blob at the top of the trunk.
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -2; dx <= 2; dx++) {
-        if (Math.abs(dx) === 2 && dy !== 0) continue; // round corners
-        const cx = tx + dx;
-        const cy = topY + dy;
-        if (cx < 1 || cx >= WORLD_W - 1 || cy < 1) continue;
-        const idx = cy * WORLD_W + cx;
-        if ((w[idx] & TYPE_MASK) === AIR) w[idx] = LEAVES;
-      }
-    }
+    if (plantTree(scene.world, rnd, tx)) planted++;
   }
 }
 
@@ -548,7 +660,8 @@ function update(_time, delta) {
 
 function runTick(scene) {
   handleInput(scene);
-  // Menu + placement mode pause gameplay entirely.
+  // Title screen + menu + placement mode pause gameplay entirely.
+  if (scene.titleOpen) return;
   if (scene.buildMenu.open) return;
   if (scene.placement.active) return;
 
@@ -576,6 +689,7 @@ function runTick(scene) {
   }
   tickLeafDecay(scene);
   tickFurnaces(scene);
+  tickTutorial(scene);
   updateCamera(scene);
 
   if (scene.nightActive) {
@@ -595,6 +709,7 @@ function endNight(scene) {
   recomputeDayLengths(scene); // day gets 10 s longer, night 5 s
   scene.player.hp = scene.player.maxHp;
   despawnAllMonsters(scene);
+  regrowTrees(scene, 4); // compensate for whatever monsters chewed
   showToast(scene, 'DAY BREAKS!');
 }
 
@@ -900,6 +1015,18 @@ function resolveMineralStability(scene) {
 function handleInput(scene) {
   const c = scene.controls;
 
+  // Title screen: U starts the game and kicks off the tutorial.
+  if (scene.titleOpen) {
+    if (c.pressed.P1_1) {
+      c.pressed.P1_1 = false;
+      scene.titleOpen = false;
+      scene.titleContainer.setVisible(false);
+      setTutorialStep(scene, 1);
+    }
+    c.pressed.P1_2 = false; c.pressed.P1_3 = false; c.pressed.P1_U = false;
+    return;
+  }
+
   // Death modal: U restarts, everything else absorbed.
   if (scene.gameOver) {
     if (c.pressed.P1_1) {
@@ -1055,7 +1182,7 @@ function tryMine(scene, dx, dy) {
 
     // Hardness is in damage units (same scale as TIER_DAMAGE). Day → use
     // the player's pick; night → use their sword (auto-selected).
-    damage[idx] = Math.min(255, damage[idx] + TIER_DAMAGE[getActiveTier(scene)]);
+    damage[idx] = Math.min(65535, damage[idx] + TIER_DAMAGE[getActiveTier(scene)]);
     if (damage[idx] >= hard) {
       w[idx] = AIR;
       damage[idx] = 0;
@@ -1716,6 +1843,10 @@ function buildHud(scene) {
   buildBuildMenuUi(scene);
   buildPlacementUi(scene);
   buildDeathModalUi(scene);
+  buildTutorialUi(scene);
+  buildTitleUi(scene);
+  scene.titleOpen = true;
+  scene.tutorial = { step: 0, finalDismissTick: 0 };
 }
 
 function buildDeathModalUi(scene) {
@@ -1743,6 +1874,78 @@ function buildDeathModalUi(scene) {
       .setOrigin(0.5),
   );
   scene.deathModal = { container: c, statsText: stats };
+}
+
+// ----- Title screen -----
+
+function buildTitleUi(scene) {
+  const c = scene.add.container(0, 0).setDepth(55);
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x050810, 0.92));
+  c.add(
+    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, 'STRIKE AND STONE', {
+      fontFamily: 'monospace', fontSize: '40px', color: '#ffe066', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 4,
+    }).setOrigin(0.5),
+  );
+  c.add(
+    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 30, 'a falling-sand miner', {
+      fontFamily: 'monospace', fontSize: '14px', color: '#a0c8ff',
+    }).setOrigin(0.5),
+  );
+  c.add(
+    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 40, 'PRESS U TO START', {
+      fontFamily: 'monospace', fontSize: '16px', color: '#ffffff', fontStyle: 'bold',
+    }).setOrigin(0.5),
+  );
+  c.add(
+    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 78,
+      'A/D move   W jump   U mine/attack   I menu   O home/sleep', {
+      fontFamily: 'monospace', fontSize: '10px', color: '#7a7a82',
+    }).setOrigin(0.5),
+  );
+  scene.titleContainer = c;
+}
+
+// ----- Tutorial banner -----
+
+function buildTutorialUi(scene) {
+  const c = scene.add.container(GAME_WIDTH / 2, 30).setDepth(30);
+  c.setVisible(false);
+  const bg = scene.add.rectangle(0, 0, 640, 44, 0x000000, 0.7).setOrigin(0.5);
+  bg.setStrokeStyle(1, 0xffe066);
+  const text = scene.add.text(0, 0, '', {
+    fontFamily: 'monospace', fontSize: '12px', color: '#ffe066',
+    fontStyle: 'bold', align: 'center',
+  }).setOrigin(0.5);
+  c.add(bg);
+  c.add(text);
+  scene.tutorialContainer = c;
+  scene.tutorialText = text;
+}
+
+function setTutorialStep(scene, step) {
+  scene.tutorial.step = step;
+  const txt = TUTORIAL_STEPS[step];
+  if (txt) {
+    scene.tutorialText.setText(txt);
+    scene.tutorialContainer.setVisible(true);
+    if (step === 4) {
+      scene.tutorial.finalDismissTick = scene.tickCount + TUTORIAL_FINAL_HOLD_TICKS;
+    }
+  } else {
+    scene.tutorialContainer.setVisible(false);
+  }
+}
+
+function tickTutorial(scene) {
+  const t = scene.tutorial;
+  if (t.step === 0 || t.step >= TUTORIAL_STEPS.length - 1) return;
+  if (t.step === 1 && scene.inventory[WOOD] >= 1) { setTutorialStep(scene, 2); return; }
+  if (t.step === 2 && scene.inventory[WOOD] >= 10) { setTutorialStep(scene, 3); return; }
+  if (t.step === 3 && scene.pick >= TIER_WOOD) { setTutorialStep(scene, 4); return; }
+  if (t.step === 4 && scene.tickCount >= t.finalDismissTick) {
+    setTutorialStep(scene, 5);
+  }
 }
 
 function refreshHpHud(scene) {
@@ -2423,9 +2626,13 @@ function spawnMonstersTick(scene) {
   if (scene.monsterSpawnTimer > 0) return;
   scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
   if (scene.monsters.length >= MONSTER_MAX) return;
-  // Pick a random type. Slimes a bit more common than the others.
+  // Distribution: slime 30%, zombie 25%, flyer 15%, ghost 15%, bomber 15%.
   const r = Math.random();
-  const type = r < 0.45 ? MON_SLIME : r < 0.8 ? MON_ZOMBIE : MON_FLYER;
+  const type =
+    r < 0.30 ? MON_SLIME :
+    r < 0.55 ? MON_ZOMBIE :
+    r < 0.70 ? MON_FLYER :
+    r < 0.85 ? MON_GHOST : MON_BOMBER;
   spawnMonster(scene, type);
 }
 
@@ -2434,14 +2641,12 @@ function spawnMonster(scene, type) {
   const side = Math.random() < 0.5 ? -1 : 1;
   const offset = GAME_WIDTH / 2 + 24;
   let x = p.x + side * offset;
-  // Clamp to world.
   x = Math.max(2 * TILE, Math.min((WORLD_W - 2) * TILE, x));
   let y;
-  if (type === MON_FLYER) {
-    // Flyers spawn above the player, at the upper edge of the viewport.
+  if (type === MON_FLYER || type === MON_GHOST) {
+    // Aerial monsters spawn near the upper edge of the viewport.
     y = Math.max(8 * TILE, p.y - GAME_HEIGHT * 0.4);
   } else {
-    // Ground monsters: snap to surface at that x.
     const tx = Math.max(1, Math.min(WORLD_W - 2, (x / TILE) | 0));
     const surfY = findSurface(scene.world, tx);
     y = surfY * TILE;
@@ -2450,19 +2655,23 @@ function spawnMonster(scene, type) {
 }
 
 function createMonster(scene, type, x, y) {
+  const def = MONSTER_DEFS[type];
   const m = {
     type, x, y, vx: 0, vy: 0,
+    w: def.w, h: def.h, hp: def.hp,
     facing: 1, jumpTimer: 0,
-    flashTicks: 0,
+    flashTicks: 0, stunTicks: 0,
+    prevX: x, stuckTicks: 0, stuck: false,
+    fuseTicks: def.explodesOnProximity ? -1 : 0,
   };
-  // HP scales so that each sword tier meaningfully cuts kill time:
-  //   slime 12 hp  → fists 6, wood 2, stone 1
-  //   zombie 30 hp → fists 15, wood 3, stone 2, copper 1
-  //   flyer 6 hp   → fists 3, wood 1
-  if (type === MON_SLIME)       { m.w = 12; m.h = 8;  m.hp = 12; }
-  else if (type === MON_ZOMBIE) { m.w = 12; m.h = 22; m.hp = 30; }
-  else                          { m.w = 14; m.h = 8;  m.hp = 6;  }
   m.sprite = buildMonsterVisual(scene, type);
+  // Thin HP bar above the monster. Separate objects (not inside the
+  // sprite container) so the facing flip / stun tween don't mirror or
+  // fade the bar. Origin (0, 0.5) so scaleX shrinks from the left.
+  m.hpBarBg = scene.add.rectangle(0, 0, def.w, 1, 0x400010)
+    .setOrigin(0, 0.5).setDepth(11);
+  m.hpBarFg = scene.add.rectangle(0, 0, def.w, 1, 0x60e060)
+    .setOrigin(0, 0.5).setDepth(11);
   return m;
 }
 
@@ -2474,15 +2683,18 @@ function createMonster(scene, type, x, y) {
 function applyMonsterDamage(scene, m, dmg) {
   m.hp -= dmg;
   m.flashTicks = 12;
-  m.stunTicks = 10;
-  const knockDir = m.x < scene.player.x ? -1 : 1;
-  const strength = 2 + scene.sword * 0.5;
-  m.vx = knockDir * strength;
-  m.vy = -strength * 0.6; // lift even flyers
+  // Knockback is opt-in per monster. Ghost-like enemies (future) will
+  // have receivesKnockback:false and absorb the hit without being
+  // shoved around.
+  if (MONSTER_DEFS[m.type].receivesKnockback) {
+    m.stunTicks = 10;
+    const knockDir = m.x < scene.player.x ? -1 : 1;
+    const strength = 2 + scene.sword * 0.5;
+    m.vx = knockDir * strength;
+    m.vy = -strength * 0.6;
+  }
   if (m.hp <= 0) {
-    m.sprite.destroy();
-    const idx = scene.monsters.indexOf(m);
-    if (idx >= 0) scene.monsters.splice(idx, 1);
+    destroyMonster(scene, m);
   }
 }
 
@@ -2502,12 +2714,29 @@ function buildMonsterVisual(scene, type) {
     c.add(scene.add.rectangle(-2, -19, 1, 1, 0x101018));     // eye L
     c.add(scene.add.rectangle( 2, -19, 1, 1, 0x101018));     // eye R
     c.add(scene.add.rectangle( 0, -16, 4, 1, 0x301010));     // mouth
-  } else {
+  } else if (type === MON_FLYER) {
     c.add(scene.add.rectangle(-6, -5, 5, 3, 0x501818));      // wing L
     c.add(scene.add.rectangle( 6, -5, 5, 3, 0x501818));      // wing R
     c.add(scene.add.rectangle( 0, -4, 6, 6, 0x6a2a30));      // body
     c.add(scene.add.rectangle(-1, -5, 1, 1, 0xff6060));      // eye L
     c.add(scene.add.rectangle( 1, -5, 1, 1, 0xff6060));      // eye R
+  } else if (type === MON_GHOST) {
+    // Translucent-feel pale shape with a wavy bottom.
+    c.add(scene.add.rectangle( 0, -9, 10, 10, 0xc4dcf2));    // body
+    c.add(scene.add.rectangle(-4, -2, 3, 3, 0xc4dcf2));      // tail L
+    c.add(scene.add.rectangle( 0, -2, 3, 3, 0xc4dcf2));      // tail C
+    c.add(scene.add.rectangle( 4, -2, 3, 3, 0xc4dcf2));      // tail R
+    c.add(scene.add.rectangle(-2, -10, 2, 2, 0x101018));     // eye L
+    c.add(scene.add.rectangle( 2, -10, 2, 2, 0x101018));     // eye R
+    c.setAlpha(0.82);                                        // phasing feel
+  } else if (type === MON_BOMBER) {
+    c.add(scene.add.rectangle(-3, -2, 4, 4, 0x2a5a20));      // leg L
+    c.add(scene.add.rectangle( 3, -2, 4, 4, 0x2a5a20));      // leg R
+    c.add(scene.add.rectangle( 0, -9,  12, 10, 0x5aaa30));   // body
+    c.add(scene.add.rectangle(-2, -11, 2, 2, 0x101018));     // eye L
+    c.add(scene.add.rectangle( 2, -11, 2, 2, 0x101018));     // eye R
+    c.add(scene.add.rectangle( 0, -7,  5, 1, 0x101018));     // frown
+    c.add(scene.add.rectangle( 0, -14, 2, 2, 0x9a3028));     // fuse top
   }
   return c;
 }
@@ -2527,7 +2756,8 @@ function tickMonsters(scene) {
 // array, so sword mining and monster attack stack naturally.
 const MONSTER_ATTACK_INTERVAL = 30; // 0.5 s between chip attacks
 function monsterAttackTiles(scene, m) {
-  if (m.type === MON_FLYER) return;
+  const def = MONSTER_DEFS[m.type];
+  if (!def.canAttackTiles) return;
   if ((scene.tickCount % MONSTER_ATTACK_INTERVAL) !== 0) return;
   const probeX = m.x + m.facing * (m.w / 2 + 1);
   const tx = (probeX / TILE) | 0;
@@ -2538,12 +2768,18 @@ function monsterAttackTiles(scene, m) {
     if (ty < 1 || ty >= WORLD_H - 1) continue;
     const idx = ty * WORLD_W + tx;
     const cell = scene.world[idx];
-    if (!isStructuralTile(cell)) continue;
     const t = cell & TYPE_MASK;
+    // Structures are always fair game. Trees (WOOD) too — monsters
+    // always chew through. Raw terrain only when the monster is stuck
+    // so they don't raze the landscape on the way to the player.
+    const attackable =
+      isStructuralTile(cell) ||
+      t === WOOD ||
+      (m.stuck && (t === DIRT || t === STONE || t === GRAVEL || t === SAND));
+    if (!attackable) continue;
     const hard = BLOCK_HARDNESS[t];
     if (hard === 0) continue;
-    const dmg = m.type === MON_ZOMBIE ? 5 : 3;
-    scene.damage[idx] = Math.min(255, scene.damage[idx] + dmg);
+    scene.damage[idx] = Math.min(65535, scene.damage[idx] + def.attackDamage);
     if (scene.damage[idx] >= hard) {
       scene.world[idx] = AIR;
       scene.damage[idx] = 0;
@@ -2555,17 +2791,17 @@ function monsterAttackTiles(scene, m) {
 
 function tickMonster(scene, m, p) {
   if (m.flashTicks > 0) m.flashTicks--;
+  const def = MONSTER_DEFS[m.type];
 
-  // While stunned from a sword hit, skip the AI so the knockback velocity
-  // isn't overwritten. Ground monsters still take gravity and collision;
-  // flyers decay their velocity so they don't drift forever.
+  // Stun freezes AI so knockback velocity isn't overwritten. Phasing
+  // monsters decay; collidable ones still take gravity + collision.
   if (m.stunTicks > 0) {
     m.stunTicks--;
-    if (m.type === MON_FLYER) {
+    if (def.ignoresCollision) {
       m.x += m.vx; m.y += m.vy;
       m.vx *= 0.85; m.vy *= 0.85;
     } else {
-      m.vy += GRAVITY;
+      if (def.hasGravity) m.vy += GRAVITY;
       moveMonsterWithCollision(scene, m);
     }
     return;
@@ -2574,32 +2810,123 @@ function tickMonster(scene, m, p) {
   const dx = p.x - m.x;
   m.facing = dx >= 0 ? 1 : -1;
 
-  if (m.type === MON_SLIME) {
-    m.vy += GRAVITY;
-    m.jumpTimer--;
-    if (m.jumpTimer <= 0 && monsterOnGround(scene, m)) {
-      m.vy = -3.0;
-      m.vx = m.facing * 1.2;
-      m.jumpTimer = 50 + ((Math.random() * 30) | 0);
-    }
-    moveMonsterWithCollision(scene, m);
-  } else if (m.type === MON_ZOMBIE) {
-    m.vy += GRAVITY;
-    m.vx = m.facing * 0.6;
-    if (monsterOnGround(scene, m) && monsterBlockedAhead(scene, m)) {
-      m.vy = -3.2;
-    }
-    moveMonsterWithCollision(scene, m);
-  } else { // MON_FLYER — no gravity, glides toward player center
+  if (def.aiMode === 'glide') {
+    // Point at the player's center. If the monster ignores collision
+    // (ghost-like), phase through; otherwise use standard collision so
+    // flyers bounce off ceilings and walls.
     const dy = (p.y - p.h / 2) - (m.y - m.h / 2);
     const dist = Math.hypot(dx, dy) || 1;
-    m.vx = (dx / dist) * 0.8;
-    m.vy = (dy / dist) * 0.8;
-    m.x += m.vx;
-    m.y += m.vy;
+    m.vx = (dx / dist) * def.glideSpeed;
+    m.vy = (dy / dist) * def.glideSpeed;
+    if (def.ignoresCollision) { m.x += m.vx; m.y += m.vy; }
+    else                       { moveMonsterWithCollision(scene, m); }
+  } else if (def.aiMode === 'ground') {
+    if (def.hasGravity) m.vy += GRAVITY;
+    const onGround = monsterOnGround(scene, m);
+    // A bomber with a burning fuse freezes in place — it's committed.
+    const fuseBurning = def.explodesOnProximity && m.fuseTicks > 0;
+
+    if (!fuseBurning) {
+      let jumpNow = false;
+      if (def.jumpTrigger === 'timer' && onGround) {
+        m.jumpTimer--;
+        if (m.jumpTimer <= 0) {
+          jumpNow = true;
+          m.jumpTimer = def.jumpTimerMin
+            + ((Math.random() * (def.jumpTimerMax - def.jumpTimerMin)) | 0);
+        }
+      } else if (def.jumpTrigger === 'blocked'
+                 && onGround && monsterBlockedAhead(scene, m)) {
+        jumpNow = true;
+      }
+      if (jumpNow) m.vy = m.stuck ? STUCK_JUMP_VELOCITY : def.jumpVelocity;
+
+      // Horizontal velocity is re-asserted every tick. This is the fix for
+      // the slime "stuck in 1-cube" bug: previously vx was only set on the
+      // jump frame, and the first wall collision zeroed it.
+      m.vx = m.facing * (onGround ? def.walkSpeed : def.airSpeed);
+    } else {
+      m.vx = 0; // frozen during fuse
+    }
+
+    moveMonsterWithCollision(scene, m);
+  }
+
+  // Stuck detection — only meaningful for monsters that collide.
+  if (!def.ignoresCollision) {
+    const moved = Math.abs(m.x - m.prevX) > 0.1;
+    if (!moved && Math.abs(m.vx) > 0.05) m.stuckTicks++;
+    else                                  m.stuckTicks = 0;
+    m.stuck = m.stuckTicks >= STUCK_THRESHOLD_TICKS;
+    m.prevX = m.x;
   }
 
   monsterAttackTiles(scene, m);
+  if (def.explodesOnProximity) tickBomberFuse(scene, m, p, def);
+}
+
+// Bomber proximity fuse. fuseTicks < 0 means "armed but not burning";
+// once the player gets within explosionRange, it starts counting down
+// and the bomber freezes. When it hits 0 the blast fires.
+function tickBomberFuse(scene, m, p, def) {
+  if (m.fuseTicks == null) m.fuseTicks = -1;
+  if (m.fuseTicks < 0) {
+    const dx = p.x - m.x;
+    const dy = (p.y - p.h / 2) - (m.y - m.h / 2);
+    if (Math.hypot(dx, dy) <= def.explosionRange) {
+      m.fuseTicks = def.fuseTicks;
+    }
+    return;
+  }
+  m.fuseTicks--;
+  if (m.fuseTicks <= 0) bomberExplode(scene, m, def);
+}
+
+function bomberExplode(scene, m, def) {
+  // Destroy most tiles in a circular blast. World BORDER stays intact
+  // so the map can't be blown open; everything else goes.
+  const cx = (m.x / TILE) | 0;
+  const cy = ((m.y - m.h / 2) / TILE) | 0;
+  const r = def.explosionRadius;
+  const r2 = r * r;
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      if (dx * dx + dy * dy > r2) continue;
+      const tx = cx + dx, ty = cy + dy;
+      if (tx < 1 || tx >= WORLD_W - 1 || ty < 1 || ty >= WORLD_H - 1) continue;
+      const idx = ty * WORLD_W + tx;
+      const t = scene.world[idx] & TYPE_MASK;
+      const cat = BLOCK_CAT[t];
+      if (cat === CAT_AIR || cat === CAT_LIQUID || cat === CAT_DECOR) continue;
+      if (t === BORDER) continue;
+      scene.world[idx] = AIR;
+      scene.damage[idx] = 0;
+    }
+  }
+  scene.dirtyMineral = true;
+
+  // Damage the player if caught in the radius.
+  const p = scene.player;
+  const centerX = (cx + 0.5) * TILE;
+  const centerY = (cy + 0.5) * TILE;
+  const pdx = p.x - centerX;
+  const pdy = (p.y - p.h / 2) - centerY;
+  const radPx = r * TILE;
+  if (pdx * pdx + pdy * pdy <= radPx * radPx && p.invulnTicks <= 0) {
+    applyPlayerDamage(scene, def.explosionDamage);
+    p.invulnTicks = PLAYER_INVULN_TICKS;
+  }
+
+  destroyMonster(scene, m);
+}
+
+// Centralized cleanup so sprite + HP bar + array entry go together.
+function destroyMonster(scene, m) {
+  m.sprite.destroy();
+  if (m.hpBarBg) m.hpBarBg.destroy();
+  if (m.hpBarFg) m.hpBarFg.destroy();
+  const idx = scene.monsters.indexOf(m);
+  if (idx >= 0) scene.monsters.splice(idx, 1);
 }
 
 function monsterOnGround(scene, m) {
@@ -2635,8 +2962,7 @@ function checkMonsterDamage(scene) {
   for (let i = 0; i < scene.monsters.length; i++) {
     const m = scene.monsters[i];
     if (aabbOverlap(p, m)) {
-      const dmg = m.type === MON_ZOMBIE ? 2 : 1;
-      applyPlayerDamage(scene, dmg);
+      applyPlayerDamage(scene, MONSTER_DEFS[m.type].contactDamage);
       p.invulnTicks = PLAYER_INVULN_TICKS;
       return;
     }
@@ -2654,16 +2980,35 @@ function aabbOverlap(a, b) {
 function renderMonsters(scene) {
   for (let i = 0; i < scene.monsters.length; i++) {
     const m = scene.monsters[i];
+    const def = MONSTER_DEFS[m.type];
     m.sprite.setPosition(m.x - scene.cam.x, m.y - scene.cam.y);
     m.sprite.setScale(m.facing < 0 ? -1 : 1, 1);
-    // Flash on hit: blink alpha while flashTicks > 0.
-    m.sprite.setAlpha(m.flashTicks > 0 && (m.flashTicks & 4) ? 0.3 : 1);
+    // Alpha priority: fuse pulse > damage flash > baseline (ghost
+    // keeps its phasing 0.82 set in buildMonsterVisual).
+    let alpha = (m.type === MON_GHOST) ? 0.82 : 1;
+    if (m.fuseTicks > 0) {
+      alpha = (m.fuseTicks & 6) < 3 ? 0.45 : 1; // rapid red-ish pulse
+    } else if (m.flashTicks > 0 && (m.flashTicks & 4)) {
+      alpha = 0.3;
+    }
+    m.sprite.setAlpha(alpha);
+
+    // Thin HP bar — aligned to the monster's top edge.
+    const barX = m.x - scene.cam.x - def.w / 2;
+    const barY = m.y - m.h - 3 - scene.cam.y;
+    m.hpBarBg.setPosition(barX, barY);
+    m.hpBarFg.setPosition(barX, barY);
+    const ratio = Math.max(0, m.hp / def.hp);
+    m.hpBarFg.scaleX = ratio;
   }
 }
 
 function despawnAllMonsters(scene) {
   for (let i = 0; i < scene.monsters.length; i++) {
-    scene.monsters[i].sprite.destroy();
+    const m = scene.monsters[i];
+    m.sprite.destroy();
+    if (m.hpBarBg) m.hpBarBg.destroy();
+    if (m.hpBarFg) m.hpBarFg.destroy();
   }
   scene.monsters.length = 0;
   scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
