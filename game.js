@@ -45,17 +45,21 @@ const CAT_SANDLIKE = 2;
 const CAT_SOLID = 3;
 const CAT_MINERAL = 4;
 const CAT_MAGIC = 5;
+// Decor category: pass-through (isSolidCell returns false), never falls,
+// never mineable (hardness 0). Used for leaves, clouds, any ornament.
+const CAT_DECOR = 6;
 
 // Type ids — keep stable so a saved world (future feature) doesn't drift.
 const AIR = 0, DIRT = 1, SAND = 2, WATER = 3, STONE = 4,
       GRAVEL = 5, LAVA = 6, COPPER = 7, IRON = 8, BORDER = 9,
       WOOD = 10, COPPER_INGOT = 11, IRON_INGOT = 12,
-      FURNACE = 13, IRON_DOOR = 14;
+      FURNACE = 13, IRON_DOOR = 14,
+      LEAVES = 15, CLOUD = 16;
 
 // Colors are packed little-endian 0xAABBGGRR for direct Uint32 writes
 // into the canvas ImageData buffer.
 //
-// Hardness and TOOL_DAMAGE share a single damage-units scale:
+// Hardness and TIER_DAMAGE share a single damage-units scale:
 //   fist = 2, wood pick = 10, stone pick = 20, copper pick = 30.
 // So hardness=10 means "1 wood-pick hit"; hardness=4 means "0.4 wood-pick
 // hits" (fists break it in 2 hits). Everything lives in Uint8Array.
@@ -78,6 +82,9 @@ const BLOCKS = [
   // Placeable structures (magic, unbreakable in v3).
   { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC,   color: 0xff3a3a40, fallTicks: 0,  hardness: 0 },
   { id: IRON_DOOR,    name: 'iron door',    cat: CAT_MAGIC,   color: 0xffa0a8b4, fallTicks: 0,  hardness: 0 },
+  // Decor — cosmetic only, pass-through, not mineable.
+  { id: LEAVES,       name: 'leaves',       cat: CAT_DECOR,   color: 0xff4aa040, fallTicks: 0,  hardness: 0 },
+  { id: CLOUD,        name: 'cloud',        cat: CAT_DECOR,   color: 0xffe8eef0, fallTicks: 0,  hardness: 0 },
 ];
 
 // Flat lookup tables for the hot path. 64-slot capacity (TYPE_MASK + 1).
@@ -94,22 +101,34 @@ for (const b of BLOCKS) {
   BLOCK_NAME[b.id] = b.name;
 }
 
-// ----- Tools: damage × 10 (integer resolution for fist's 0.2). -----
-// Threshold to break a tile = BLOCK_HARDNESS[t] * 10.
-const TOOL_FIST = 0, TOOL_WOOD = 1, TOOL_STONE = 2, TOOL_COPPER = 3;
-const TOOL_DAMAGE = [2, 10, 20, 30];               // fist=0.2, wood=1, stone=2, copper=3
-const TOOL_NAMES = ['FISTS', 'WOODEN PICKAXE', 'STONE PICKAXE', 'COPPER PICKAXE'];
-// Recipes: index = tool id, null for fist (default).
-// ----- Build recipes — one unified menu for tools AND structures. -----
-// `tool` present → equip that tier instead of placing a world tile.
-const BUILD_RECIPES = [
-  { name: 'WOODEN PICKAXE', cost: [[WOOD, 10]],               tool: TOOL_WOOD   },
-  { name: 'STONE PICKAXE',  cost: [[STONE, 100]],             tool: TOOL_STONE  },
-  { name: 'COPPER PICKAXE', cost: [[COPPER_INGOT, 100]],      tool: TOOL_COPPER },
-  { name: 'FURNACE',        cost: [[STONE, 50]],              place: 'furnace'     },
-  { name: 'DIRT HOUSE',     cost: [[DIRT, 100], [WOOD, 10]],  place: 'dirtHouse'   },
-  { name: 'STONE HOUSE',    cost: [[STONE, 1000]],            place: 'stoneHouse'  },
-  { name: 'IRON DOOR',      cost: [[IRON_INGOT, 10]],         place: 'ironDoor'    },
+// ----- Tools: tier-based damage shared between picks and swords. -----
+// Damage scale is × 10 so fist's 0.2 dmg keeps integer resolution. The
+// player auto-uses their pick during the day and their sword at night
+// (see getActiveTier). Pick and sword tiers are tracked separately so
+// you can craft both independently.
+const TIER_FIST = 0, TIER_WOOD = 1, TIER_STONE = 2, TIER_COPPER = 3, TIER_IRON = 4;
+const TIER_DAMAGE      = [2, 10, 20, 30, 40];
+const TIER_PICK_NAMES  = ['FISTS', 'WOODEN PICKAXE', 'STONE PICKAXE', 'COPPER PICKAXE', 'IRON PICKAXE'];
+const TIER_SWORD_NAMES = ['FISTS', 'WOODEN SWORD',   'STONE SWORD',   'COPPER SWORD',   'IRON SWORD'];
+
+// ----- Build recipes — split into two tabs in the menu. -----
+// Tools are one-shot per tier slot (locked once crafted OR once a higher
+// tier in the same slot is reached). Buildings can be crafted repeatedly.
+const TOOL_RECIPES = [
+  { name: 'WOODEN PICKAXE', cost: [[WOOD, 10]],          pickTier:  TIER_WOOD   },
+  { name: 'STONE PICKAXE',  cost: [[STONE, 100]],        pickTier:  TIER_STONE  },
+  { name: 'COPPER PICKAXE', cost: [[COPPER_INGOT, 100]], pickTier:  TIER_COPPER },
+  { name: 'IRON PICKAXE',   cost: [[IRON_INGOT, 100]],   pickTier:  TIER_IRON   },
+  { name: 'WOODEN SWORD',   cost: [[WOOD, 10]],          swordTier: TIER_WOOD   },
+  { name: 'STONE SWORD',    cost: [[STONE, 100]],        swordTier: TIER_STONE  },
+  { name: 'COPPER SWORD',   cost: [[COPPER_INGOT, 100]], swordTier: TIER_COPPER },
+  { name: 'IRON SWORD',     cost: [[IRON_INGOT, 100]],   swordTier: TIER_IRON   },
+];
+const BUILDING_RECIPES = [
+  { name: 'FURNACE',     cost: [[STONE, 50]],             place: 'furnace'    },
+  { name: 'DIRT HOUSE',  cost: [[DIRT, 100], [WOOD, 10]], place: 'dirtHouse'  },
+  { name: 'STONE HOUSE', cost: [[STONE, 1000]],           place: 'stoneHouse' },
+  { name: 'IRON DOOR',   cost: [[IRON_INGOT, 10]],        place: 'ironDoor'   },
 ];
 
 // ----- Furnace tuning -----
@@ -120,7 +139,20 @@ const FURNACE_MAX_FUEL = 16;
 
 // ----- Day/night tuning -----
 const DAY_LENGTH_TICKS = 10 * 60 * TICK_RATE; // 10 minutes
-const NIGHT_LENGTH_TICKS = 3 * TICK_RATE;     // 3-second transition
+const NIGHT_LENGTH_TICKS = 3 * 60 * TICK_RATE; // 3 minutes of monster-fighting
+
+// ----- Player health -----
+const PLAYER_MAX_HP = 10;
+const DROWN_TICKS = 60;             // 1 dmg per 60 ticks fully submerged in water
+const LAVA_TICKS = 30;              // 1 dmg per 30 ticks touching lava
+const FALL_DAMAGE_PX = 15 * TILE;   // 1 dmg per 15 tiles of fall. Water cancels.
+const PLAYER_FLASH_TICKS = 24;      // blink duration after any damage source
+const PLAYER_INVULN_TICKS = 30;     // grace period from monster contact
+
+// ----- Monsters -----
+const MON_SLIME = 0, MON_ZOMBIE = 1, MON_FLYER = 2;
+const MONSTER_SPAWN_INTERVAL = 90;  // attempt a spawn every 1.5s
+const MONSTER_MAX = 10;
 
 const GRASS_COLOR = 0xff2c8845; // visual-only: dirt with air above
 
@@ -245,7 +277,8 @@ function create() {
   // Inventory / tools / crafting state.
   scene.inventory = new Uint16Array(64);
   scene.discovered = new Uint8Array(64);
-  scene.tool = TOOL_FIST;
+  scene.pick = TIER_FIST;
+  scene.sword = TIER_FIST;
   scene.invDirty = true;
   scene.furnaces = [];
   scene.buildMenu = { open: false, cursor: 0, recipes: [], prevOnSurface: false };
@@ -255,6 +288,21 @@ function create() {
   scene.nightActive = false;
   scene.nightTicksRemaining = 0;
   scene.home = { x: scene.player.x, y: scene.player.y };
+  scene.daysSurvived = 1;
+
+  // Health + hazard counters (attached to player for clean grouping).
+  scene.player.hp = PLAYER_MAX_HP;
+  scene.player.maxHp = PLAYER_MAX_HP;
+  scene.player.submergedTicks = 0;
+  scene.player.lavaTicks = 0;
+  scene.player.peakY = scene.player.y;
+  scene.player.flashTicks = 0;
+  scene.player.invulnTicks = 0;
+  scene.gameOver = false;
+
+  // Monsters (only present during night).
+  scene.monsters = [];
+  scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
 
   buildHud(scene);
 
@@ -318,6 +366,7 @@ function generateWorld(w) {
   pocket(50,  AIR,    STONE, 75,  165, 4,  2);
   pocket(25,  AIR,    DIRT,  60,  72,  3,  1); // little caverns near surface
 
+  placeClouds(w, rnd);
   placeTrees(w, rnd);
 }
 
@@ -331,12 +380,44 @@ function placeTrees(w, rnd) {
     if (surfY < 4) continue;
     if ((w[(surfY - 1) * WORLD_W + tx] & TYPE_MASK) !== AIR) continue;
     const height = 4 + ((rnd() * 3) | 0); // 4..6
+    let topY = surfY - height;
     for (let h = 1; h <= height; h++) {
       const y = surfY - h;
-      if (y < 1) break;
+      if (y < 1) { topY = y + 1; break; }
       const idx = y * WORLD_W + tx;
-      if ((w[idx] & TYPE_MASK) !== AIR) break;
+      if ((w[idx] & TYPE_MASK) !== AIR) { topY = y + 1; break; }
       w[idx] = WOOD;
+    }
+    // Canopy of LEAVES: 5-wide rounded blob at the top of the trunk.
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        if (Math.abs(dx) === 2 && dy !== 0) continue; // round corners
+        const cx = tx + dx;
+        const cy = topY + dy;
+        if (cx < 1 || cx >= WORLD_W - 1 || cy < 1) continue;
+        const idx = cy * WORLD_W + cx;
+        if ((w[idx] & TYPE_MASK) === AIR) w[idx] = LEAVES;
+      }
+    }
+  }
+}
+
+function placeClouds(w, rnd) {
+  for (let i = 0; i < 15; i++) {
+    const cx = 4 + ((rnd() * (WORLD_W - 8)) | 0);
+    const cy = 8 + ((rnd() * 35) | 0);      // upper sky band
+    const rx = 3 + ((rnd() * 5) | 0);
+    const ry = 1 + ((rnd() * 2) | 0);
+    for (let y = cy - ry; y <= cy + ry; y++) {
+      for (let x = cx - rx; x <= cx + rx; x++) {
+        if (x < 1 || x >= WORLD_W - 1 || y < 1 || y >= WORLD_H - 1) continue;
+        const nx = (x - cx) / rx;
+        const ny = (y - cy) / ry;
+        if (nx * nx + ny * ny <= 1) {
+          const idx = y * WORLD_W + x;
+          if ((w[idx] & TYPE_MASK) === AIR) w[idx] = CLOUD;
+        }
+      }
     }
   }
 }
@@ -359,8 +440,13 @@ function blob(w, cx, cy, rx, ry, fill, only) {
 }
 
 function findSurface(w, tx) {
+  // Skip AIR and CAT_DECOR (clouds, leaves) — they're pass-through, so the
+  // "surface" is the first truly solid block beneath them. Without this the
+  // player would spawn on a cloud at y=80 and take fall damage on game start.
   for (let y = 1; y < WORLD_H - 1; y++) {
-    if (w[y * WORLD_W + tx] !== AIR) return y;
+    const t = w[y * WORLD_W + tx] & TYPE_MASK;
+    const cat = BLOCK_CAT[t];
+    if (cat !== CAT_AIR && cat !== CAT_DECOR) return y;
   }
   return WORLD_H >> 1;
 }
@@ -385,11 +471,14 @@ function update(_time, delta) {
   // Render once per frame regardless of tick count.
   render(scene);
   updatePlayerVisual(scene);
+  renderMonsters(scene);
   if (scene.invDirty) {
     refreshInventoryHud(scene);
     scene.invDirty = false;
   }
   refreshDayTimer(scene);
+  refreshHpHud(scene);
+  scene.toolText.setText('TOOL: ' + getActiveToolName(scene));
 
   scene.hud.setText(
     `x ${scene.player.x | 0}  y ${scene.player.y | 0}  ` +
@@ -402,19 +491,23 @@ function runTick(scene) {
   // Build menu pauses gameplay entirely.
   if (scene.buildMenu.open) return;
 
-  // Night: brief non-interactive transition. Countdown only.
-  if (scene.nightActive) {
-    scene.nightTicksRemaining--;
-    if (scene.nightTicksRemaining <= 0) {
-      scene.nightActive = false;
-      scene.dayTime = 0;
-      scene.nightOverlay.setVisible(false);
-      showToast(scene, 'DAY BREAKS!');
-    }
-    return;
-  }
+  // Death freezes everything — waits on the restart modal.
+  if (scene.gameOver) return;
+
+  // Tick the player's invuln/flash counters every tick (so they expire
+  // even if no fresh damage arrives this tick).
+  if (scene.player.flashTicks > 0) scene.player.flashTicks--;
 
   movePlayer(scene);
+  updatePlayerHazards(scene);
+
+  // Night-only systems: monsters spawn, walk/jump/fly, and damage on touch.
+  if (scene.nightActive) {
+    spawnMonstersTick(scene);
+    tickMonsters(scene);
+    checkMonsterDamage(scene);
+  }
+
   simulateViewport(scene);
   if (scene.dirtyMineral) {
     resolveMineralStability(scene);
@@ -423,11 +516,23 @@ function runTick(scene) {
   tickFurnaces(scene);
   updateCamera(scene);
 
-  // Tick the day clock. When the day is over, force the player home.
-  scene.dayTime++;
-  if (scene.dayTime >= DAY_LENGTH_TICKS) {
-    goHome(scene);
+  if (scene.nightActive) {
+    scene.nightTicksRemaining--;
+    if (scene.nightTicksRemaining <= 0) endNight(scene);
+  } else {
+    scene.dayTime++;
+    if (scene.dayTime >= DAY_LENGTH_TICKS) goHome(scene);
   }
+}
+
+function endNight(scene) {
+  scene.nightActive = false;
+  scene.dayTime = 0;
+  scene.nightOverlay.setVisible(false);
+  scene.daysSurvived++;
+  scene.player.hp = scene.player.maxHp;
+  despawnAllMonsters(scene);
+  showToast(scene, 'DAY BREAKS!');
 }
 
 // ============================================================
@@ -656,16 +761,20 @@ function resolveMineralStability(scene) {
 function handleInput(scene) {
   const c = scene.controls;
 
-  // Build menu absorbs all input while open — gameplay pauses via runTick.
-  if (scene.buildMenu.open) {
-    handleBuildMenuInput(scene);
+  // Death modal: U restarts, everything else absorbed.
+  if (scene.gameOver) {
+    if (c.pressed.P1_1) {
+      c.pressed.P1_1 = false;
+      scene.scene.restart();
+      return;
+    }
+    c.pressed.P1_2 = false; c.pressed.P1_3 = false; c.pressed.P1_U = false;
     return;
   }
 
-  // Night is non-interactive (brief transition).
-  if (scene.nightActive) {
-    c.pressed.P1_1 = false; c.pressed.P1_2 = false;
-    c.pressed.P1_3 = false; c.pressed.P1_U = false;
+  // Build menu absorbs all input while open — gameplay pauses via runTick.
+  if (scene.buildMenu.open) {
+    handleBuildMenuInput(scene);
     return;
   }
 
@@ -690,25 +799,32 @@ function handleInput(scene) {
   scene.player.vx = vx * MOVE_SPEED;
   if (vx !== 0) scene.facing = vx;
 
-  // Jump — joystick UP only (P1_U / W). P1_1 is now the mine button.
-  if (c.pressed.P1_U && scene.player.onGround) {
-    scene.player.vy = JUMP_VELOCITY;
-    scene.player.onGround = false;
+  // Jump — joystick UP only (P1_U / W). Ground-jump OR swim-stroke: when
+  // in any liquid you can kick upward repeatedly to simulate swimming.
+  if (c.pressed.P1_U) {
+    if (scene.player.onGround || playerLiquidStatus(scene).inAnyLiquid) {
+      scene.player.vy = JUMP_VELOCITY;
+      scene.player.onGround = false;
+    }
   }
   c.pressed.P1_U = false;
 
-  // Mine (P1_1 / U / space) — one hit per press. Direction from joystick,
-  // fallback to facing. Note: P1_U is sampled via `held` here, not
-  // `pressed`, because we already consumed the press for jump.
+  // U (P1_1) — one press per action. Day: mine a tile (direction from
+  // joystick, fallback to facing). Night: swing the sword at any monster
+  // in front of the player. No mining at night by design.
   if (c.pressed.P1_1) {
     c.pressed.P1_1 = false;
-    let dx = 0, dy = 0;
-    if (c.held.P1_D)      dy = 1;
-    else if (c.held.P1_U) dy = -1;
-    else if (c.held.P1_L) dx = -1;
-    else if (c.held.P1_R) dx = 1;
-    else                  dx = scene.facing;
-    tryMine(scene, dx, dy);
+    if (scene.nightActive) {
+      tryAttack(scene);
+    } else {
+      let dx = 0, dy = 0;
+      if (c.held.P1_D)      dy = 1;
+      else if (c.held.P1_U) dy = -1;
+      else if (c.held.P1_L) dx = -1;
+      else if (c.held.P1_R) dx = 1;
+      else                  dx = scene.facing;
+      tryMine(scene, dx, dy);
+    }
   }
 }
 
@@ -750,6 +866,17 @@ function getMineTargets(scene, dx, dy, out) {
   return n;
 }
 
+// Active tool selection: pick during day, sword at night. Both tracked
+// independently so the player can craft them in whatever order.
+function getActiveTier(scene) {
+  return scene.nightActive ? scene.sword : scene.pick;
+}
+function getActiveToolName(scene) {
+  return scene.nightActive
+    ? TIER_SWORD_NAMES[scene.sword]
+    : TIER_PICK_NAMES[scene.pick];
+}
+
 function tryMine(scene, dx, dy) {
   if (!scene._mineBuf) scene._mineBuf = new Int32Array(8);
   const buf = scene._mineBuf;
@@ -772,8 +899,9 @@ function tryMine(scene, dx, dy) {
     scene.mineDx = dx;
     scene.mineDy = dy;
 
-    // Hardness is already stored in damage units (matches TOOL_DAMAGE).
-    damage[idx] = Math.min(255, damage[idx] + TOOL_DAMAGE[scene.tool]);
+    // Hardness is in damage units (same scale as TIER_DAMAGE). Day → use
+    // the player's pick; night → use their sword (auto-selected).
+    damage[idx] = Math.min(255, damage[idx] + TIER_DAMAGE[getActiveTier(scene)]);
     if (damage[idx] >= hard) {
       w[idx] = AIR;
       damage[idx] = 0;
@@ -791,8 +919,38 @@ function tryMine(scene, dx, dy) {
   return false;
 }
 
+// Night-only sword swing: hits monsters overlapping a hitbox in the
+// direction the player is facing. Damage = sword tier damage (fists if
+// no sword crafted). Iterates backwards so splicing during the loop is
+// safe when a monster dies.
+function tryAttack(scene) {
+  const p = scene.player;
+  const dmg = TIER_DAMAGE[scene.sword];
+  scene.mineAnim = 14;
+  scene.mineDx = scene.facing;
+  scene.mineDy = 0;
+
+  const reach = 14;
+  const hxNear = p.x + scene.facing * (p.w / 2);
+  const hxFar  = p.x + scene.facing * (p.w / 2 + reach);
+  const hxMin = Math.min(hxNear, hxFar);
+  const hxMax = Math.max(hxNear, hxFar);
+  const hyMax = p.y + 2;
+  const hyMin = p.y - p.h - 2;
+
+  for (let i = scene.monsters.length - 1; i >= 0; i--) {
+    const m = scene.monsters[i];
+    const mx0 = m.x - m.w / 2, mx1 = m.x + m.w / 2;
+    const my0 = m.y - m.h, my1 = m.y;
+    if (mx0 < hxMax && mx1 > hxMin && my0 < hyMax && my1 > hyMin) {
+      applyMonsterDamage(scene, m, dmg);
+    }
+  }
+}
+
 function movePlayer(scene) {
   const p = scene.player;
+  const wasOnGround = p.onGround;
   p.vy += GRAVITY;
   if (p.vy > TERMINAL_VY) p.vy = TERMINAL_VY;
   if (p.vy < -8) p.vy = -8;
@@ -841,6 +999,24 @@ function movePlayer(scene) {
   p.y += 1;
   p.onGround = collidesPlayer(scene, p);
   p.y -= 1;
+
+  // Fall-damage tracking: peakY is the minimum y (highest point) since the
+  // player last left the ground. On landing, compute the drop and apply
+  // damage unless water cushioned the fall.
+  if (!p.onGround) {
+    if (wasOnGround) p.peakY = p.y;        // just left ground → reset peak
+    else if (p.y < p.peakY) p.peakY = p.y; // still rising
+  } else if (!wasOnGround) {
+    const fallPx = p.y - p.peakY;
+    if (fallPx > FALL_DAMAGE_PX) {
+      const st = playerLiquidStatus(scene);
+      if (!st.touchingWater) {
+        const dmg = (fallPx / FALL_DAMAGE_PX) | 0;
+        applyPlayerDamage(scene, dmg);
+      }
+    }
+    p.peakY = p.y;
+  }
 }
 
 function collidesPlayer(scene, p) {
@@ -864,7 +1040,7 @@ function isSolidCell(cell) {
   const t = cell & TYPE_MASK;
   if (t === IRON_DOOR) return false; // player walks through their door
   const cat = BLOCK_CAT[t];
-  return cat !== CAT_AIR && cat !== CAT_LIQUID;
+  return cat !== CAT_AIR && cat !== CAT_LIQUID && cat !== CAT_DECOR;
 }
 
 function playerOnSurface(scene) {
@@ -896,6 +1072,83 @@ function playerLiquidFallTicks(scene) {
     }
   }
   return maxFall;
+}
+
+// Richer status used by hazard logic + swim-jump + fall-damage cancel.
+function playerLiquidStatus(scene) {
+  const w = scene.world;
+  const p = scene.player;
+  const halfW = p.w / 2;
+  const x0 = ((p.x - halfW) / TILE) | 0;
+  const x1 = ((p.x + halfW - 0.001) / TILE) | 0;
+  const y0 = ((p.y - p.h) / TILE) | 0;
+  const y1 = ((p.y - 0.001) / TILE) | 0;
+  let waterCells = 0, lavaCells = 0, totalCells = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      totalCells++;
+      if (y < 0 || y >= WORLD_H || x < 0 || x >= WORLD_W) continue;
+      const t = w[y * WORLD_W + x] & TYPE_MASK;
+      if (t === WATER) waterCells++;
+      else if (t === LAVA) lavaCells++;
+    }
+  }
+  return {
+    fullyInWater: waterCells > 0 && waterCells === totalCells,
+    touchingWater: waterCells > 0,
+    touchingLava: lavaCells > 0,
+    inAnyLiquid: (waterCells + lavaCells) > 0,
+  };
+}
+
+function updatePlayerHazards(scene) {
+  if (scene.gameOver) return;
+  const p = scene.player;
+  const st = playerLiquidStatus(scene);
+
+  if (st.fullyInWater) {
+    p.submergedTicks++;
+    if (p.submergedTicks >= DROWN_TICKS) {
+      p.submergedTicks = 0;
+      applyPlayerDamage(scene, 1);
+    }
+  } else {
+    p.submergedTicks = 0;
+  }
+
+  if (st.touchingLava) {
+    p.lavaTicks++;
+    if (p.lavaTicks >= LAVA_TICKS) {
+      p.lavaTicks = 0;
+      applyPlayerDamage(scene, 1);
+    }
+  } else {
+    p.lavaTicks = 0;
+  }
+}
+
+function applyPlayerDamage(scene, amt) {
+  if (scene.gameOver || amt <= 0) return;
+  const p = scene.player;
+  p.hp -= amt;
+  // Visual feedback for ANY damage (drown, lava, fall, monster touch).
+  p.flashTicks = PLAYER_FLASH_TICKS;
+  if (p.hp <= 0) {
+    p.hp = 0;
+    onPlayerDeath(scene);
+  }
+}
+
+function onPlayerDeath(scene) {
+  if (scene.gameOver) return;
+  scene.gameOver = true;
+  scene.deathModal.statsText.setText(
+    'DAY ' + scene.daysSurvived + '\n' +
+    'PICK: ' + TIER_PICK_NAMES[scene.pick] + '\n' +
+    'SWORD: ' + TIER_SWORD_NAMES[scene.sword] + '\n' +
+    'FURNACES BUILT: ' + scene.furnaces.length,
+  );
+  scene.deathModal.container.setVisible(true);
 }
 
 // ============================================================
@@ -986,25 +1239,50 @@ function render(scene) {
 
 // ----- Player visual (container of sub-rectangles, animated procedurally)
 
+// Base Y positions for upper-body parts. Lifted out of updatePlayerVisual
+// so the hot path doesn't allocate a fresh object each frame.
+const PLAYER_BASE_Y = {
+  body: -13, belt: -8, beltBuckle: -8,
+  head: -20, hair: -28,
+  eye: -22,
+  mustache: -17,
+  beardMid: -14, beardShadow: -12,
+  beardLow: -10, beardTip: -7,
+};
+
 function buildPlayerVisual(scene) {
   const c = scene.add.container(0, 0).setDepth(10);
   const parts = {};
-  // Local coords: container origin is at the player's bottom-center.
-  // y=0 is the feet line; negative y goes up.
-  const skin = 0x6f7a44, shirt = 0xc23a2a, pants = 0x2a3148,
-        helmet = 0xf2c200, eye = 0xffffff,
+  // Plain flat layers (no outlines). Beard tones lean grey rather than
+  // pure white so the dwarf reads as older/silver-bearded.
+  const pants = 0x2a3148, shirt = 0xc23a2a, belt = 0x5a3015,
+        buckle = 0xe6c046,
+        skin = 0xe4b593,
+        hair = 0xc8c8c8, beard = 0xc8c8c8, beardShadow = 0x9a9a9a,
+        eye = 0x101018,
         pickHandleColor = 0x6b4226, pickHeadColor = 0xb0b0b0;
 
-  parts.legL = scene.add.rectangle(-4, -3, 5, 6, pants);
-  parts.legR = scene.add.rectangle(4, -3, 5, 6, pants);
-  parts.body = scene.add.rectangle(0, -13, 14, 12, shirt);
-  parts.head = scene.add.rectangle(0, -22, 12, 6, skin);
-  parts.helmet = scene.add.rectangle(0, -25, 14, 3, helmet);
-  parts.eye = scene.add.rectangle(2, -22, 2, 2, eye);
-  parts.pickHandle = scene.add
+  parts.legL         = scene.add.rectangle(-4, -3, 5, 6, pants);
+  parts.legR         = scene.add.rectangle( 4, -3, 5, 6, pants);
+  parts.body         = scene.add.rectangle( 0, -13, 14, 12, shirt);
+  parts.belt         = scene.add.rectangle( 0, -8, 14, 2, belt);
+  parts.beltBuckle   = scene.add.rectangle( 0, -8, 2,  2, buckle);
+  parts.head         = scene.add.rectangle( 0, -20, 14, 14, skin);
+  // Hair raised; bigger, taller cap on top of the head.
+  parts.hair         = scene.add.rectangle( 0, -28, 12, 4, hair);
+  // Single big eye; no pupil/nose details — face is too small for that.
+  parts.eye          = scene.add.rectangle( 1, -22, 4, 4, eye);
+  parts.mustache     = scene.add.rectangle( 0, -17, 12, 2, beard);
+  parts.beardMid     = scene.add.rectangle( 0, -14, 14, 4, beard);
+  parts.beardShadow  = scene.add.rectangle( 0, -12, 12, 1, beardShadow);
+  // Lower beard sweeps strongly toward facing — looks "blown" that way.
+  parts.beardLow     = scene.add.rectangle( 2, -10, 10, 3, beard);
+  parts.beardTip     = scene.add.rectangle( 6, -7, 7, 2, beard);
+
+  parts.pickHandle   = scene.add
     .rectangle(0, -14, 12, 2, pickHandleColor)
     .setOrigin(0, 0.5);
-  parts.pickHead = scene.add.rectangle(12, -14, 4, 5, pickHeadColor);
+  parts.pickHead     = scene.add.rectangle(12, -14, 4, 5, pickHeadColor);
   parts.pickHandle.visible = false;
   parts.pickHead.visible = false;
 
@@ -1019,6 +1297,9 @@ function updatePlayerVisual(scene) {
   const c = scene.playerContainer;
   c.setPosition(p.x - scene.cam.x, p.y - scene.cam.y);
 
+  // Damage flash: blink the player container while flashTicks ticks down.
+  c.setAlpha(p.flashTicks > 0 && (p.flashTicks & 4) ? 0.25 : 1);
+
   let state;
   if (scene.mineAnim > 0)                           state = 'mine';
   else if (!p.onGround && p.vy < -0.1)              state = 'jump';
@@ -1028,43 +1309,59 @@ function updatePlayerVisual(scene) {
 
   const flip = scene.facing < 0 ? -1 : 1;
 
-  // Reset to base pose every frame.
+  // Reset legs (lower body lives at fixed y regardless of animation pose).
   parts.legL.x = -4; parts.legL.y = -3; parts.legL.scaleY = 1;
   parts.legR.x = 4;  parts.legR.y = -3; parts.legR.scaleY = 1;
-  parts.body.y = -13; parts.body.scaleY = 1;
-  parts.head.y = -22;
-  parts.helmet.y = -25;
-  parts.eye.x = flip * 2;
-  parts.eye.y = -22;
+  parts.body.scaleY = 1;
+
+  // Big single eye drifts toward facing. Beard sweeps strongly the way
+  // the dwarf is looking.
+  parts.eye.x        = flip * 3;
+  parts.mustache.x   = flip * 2;
+  parts.beardMid.x   = flip * 2;
+  parts.beardLow.x   = flip * 3;
+  parts.beardTip.x   = flip * 7;
+  parts.beltBuckle.x = flip * 4;
+
+  let bob = 0;
 
   if (state === 'walk') {
     scene.walkPhase += 0.32;
     const s = Math.sin(scene.walkPhase);
     parts.legL.scaleY = 1 - Math.max(0, s) * 0.3;
     parts.legR.scaleY = 1 - Math.max(0, -s) * 0.3;
-    const bob = Math.abs(s) * 0.7;
-    parts.body.y = -13 - bob;
-    parts.head.y = -22 - bob;
-    parts.helmet.y = -25 - bob;
-    parts.eye.y = -22 - bob;
+    bob = -Math.abs(s) * 0.7;
   } else if (state === 'jump') {
     parts.body.scaleY = 1.08;
-    parts.body.y = -14;
     parts.legL.x = -2; parts.legR.x = 2;
     parts.legL.y = -1; parts.legR.y = -1;
     parts.legL.scaleY = 0.7; parts.legR.scaleY = 0.7;
+    bob = -1;
   } else if (state === 'fall') {
     parts.legL.x = -5; parts.legR.x = 5;
     parts.body.scaleY = 0.95;
-    parts.body.y = -12;
+    bob = 1;
   }
 
-  // Pickaxe swing for mining.
+  // Apply a single bob offset to every upper-body part so the head, face
+  // and beard move as a unit. PLAYER_BASE_Y is the per-part idle Y.
+  for (const k in PLAYER_BASE_Y) parts[k].y = PLAYER_BASE_Y[k] + bob;
+
+  // Pickaxe (day) / sword (night) swing. Same rig, different colors.
   if (state === 'mine') {
     const t = (14 - scene.mineAnim) / 14;
     const swing = Math.sin(t * Math.PI);
     parts.pickHandle.visible = true;
     parts.pickHead.visible = true;
+    if (scene.nightActive) {
+      // Sword: grey grip, silver blade.
+      parts.pickHandle.fillColor = 0x707070;
+      parts.pickHead.fillColor   = 0xe0e8f0;
+    } else {
+      // Pickaxe: wooden handle, grey head.
+      parts.pickHandle.fillColor = 0x6b4226;
+      parts.pickHead.fillColor   = 0xb0b0b0;
+    }
 
     if (scene.mineDy === 0) {
       parts.pickHandle.x = flip * 5;
@@ -1146,7 +1443,7 @@ function getSkyColor(scene) {
 
 function buildHud(scene) {
   scene.toolText = scene.add
-    .text(8, 6, 'TOOL: ' + TOOL_NAMES[TOOL_FIST], {
+    .text(8, 6, 'TOOL: ' + TIER_PICK_NAMES[TIER_FIST], {
       fontFamily: 'monospace', fontSize: '12px', color: '#ffe066', fontStyle: 'bold',
     })
     .setDepth(20);
@@ -1157,7 +1454,13 @@ function buildHud(scene) {
     })
     .setDepth(20);
 
-  scene.invHud = { container: scene.add.container(8, 40).setDepth(20), rows: [] };
+  scene.hpText = scene.add
+    .text(8, 37, '', {
+      fontFamily: 'monospace', fontSize: '12px', color: '#ff6666', fontStyle: 'bold',
+    })
+    .setDepth(20);
+
+  scene.invHud = { container: scene.add.container(8, 56).setDepth(20), rows: [] };
 
   scene.toastText = scene.add
     .text(GAME_WIDTH / 2, GAME_HEIGHT / 3, '', {
@@ -1168,13 +1471,49 @@ function buildHud(scene) {
     .setDepth(50)
     .setAlpha(0);
 
-  // Night overlay — dark semi-transparent rectangle over the whole canvas.
+  // Night overlay — translucent dark blue tint so the player can still
+  // see what they're doing while it's clearly night.
   scene.nightOverlay = scene.add
-    .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000020, 0.8)
+    .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x051030, 0.45)
     .setDepth(35)
     .setVisible(false);
 
   buildBuildMenuUi(scene);
+  buildDeathModalUi(scene);
+}
+
+function buildDeathModalUi(scene) {
+  const c = scene.add.container(0, 0).setDepth(60).setVisible(false);
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.85));
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 420, 240, 0x240010).setStrokeStyle(2, 0xff6666));
+  c.add(
+    scene.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, 'YOU DIED', {
+        fontFamily: 'monospace', fontSize: '36px', color: '#ff6666', fontStyle: 'bold',
+      })
+      .setOrigin(0.5),
+  );
+  const stats = scene.add
+    .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 10, '', {
+      fontFamily: 'monospace', fontSize: '14px', color: '#ffffff', align: 'center', lineSpacing: 4,
+    })
+    .setOrigin(0.5);
+  c.add(stats);
+  c.add(
+    scene.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 80, 'PRESS U TO RESTART', {
+        fontFamily: 'monospace', fontSize: '12px', color: '#a0a8b0',
+      })
+      .setOrigin(0.5),
+  );
+  scene.deathModal = { container: c, statsText: stats };
+}
+
+function refreshHpHud(scene) {
+  const p = scene.player;
+  const filled = '|'.repeat(p.hp);
+  const empty = '.'.repeat(p.maxHp - p.hp);
+  scene.hpText.setText('HP ' + p.hp + '/' + p.maxHp + ' [' + filled + empty + ']');
 }
 
 function refreshDayTimer(scene) {
@@ -1233,7 +1572,7 @@ function refreshInventoryHud(scene) {
     rows[i].icon.visible = false;
     rows[i].text.visible = false;
   }
-  scene.toolText.setText('TOOL: ' + TOOL_NAMES[scene.tool]);
+  scene.toolText.setText('TOOL: ' + getActiveToolName(scene));
 }
 
 function showToast(scene, text) {
@@ -1250,36 +1589,86 @@ function showToast(scene, text) {
 
 // ----- Build menu -----
 
+const BUILD_MENU_ROW_COUNT = 8; // max rows in either tab (TOOL_RECIPES is biggest)
+
+function getCurrentRecipes(scene) {
+  return scene.buildMenu.tab === 'tools' ? TOOL_RECIPES : BUILDING_RECIPES;
+}
+
+// Tool recipes lock once the player's slot reaches that tier (handles both
+// "already crafted" and "skipped a lower tier"). Buildings never lock.
+function isRecipeLocked(scene, recipe) {
+  if (recipe.pickTier  != null) return scene.pick  >= recipe.pickTier;
+  if (recipe.swordTier != null) return scene.sword >= recipe.swordTier;
+  return false;
+}
+
+function findFirstUnlocked(scene, recipes) {
+  for (let i = 0; i < recipes.length; i++) {
+    if (!isRecipeLocked(scene, recipes[i])) return i;
+  }
+  return 0; // all locked → land on first row anyway
+}
+
+function findNextUnlocked(scene, recipes, fromIdx, dir) {
+  const n = recipes.length;
+  for (let i = 1; i <= n; i++) {
+    const idx = (((fromIdx + dir * i) % n) + n) % n;
+    if (!isRecipeLocked(scene, recipes[idx])) return idx;
+  }
+  return -1; // all locked
+}
+
 function buildBuildMenuUi(scene) {
   const c = scene.add.container(0, 0).setDepth(40);
   c.setVisible(false);
   scene.buildMenuContainer = c;
 
   c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.75));
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 440, 320, 0x1a2238).setStrokeStyle(2, 0xffe066));
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 460, 380, 0x1a2238).setStrokeStyle(2, 0xffe066));
 
   c.add(
-    scene.add.text(GAME_WIDTH / 2, 170, 'BUILD', {
-      fontFamily: 'monospace', fontSize: '28px', color: '#ffe066', fontStyle: 'bold',
+    scene.add.text(GAME_WIDTH / 2, 145, 'BUILD', {
+      fontFamily: 'monospace', fontSize: '24px', color: '#ffe066', fontStyle: 'bold',
     }).setOrigin(0.5),
   );
 
+  // Tab headers (active tab is highlighted; switch with L/R).
+  scene.buildMenuTabs = {};
+  scene.buildMenuTabs.tools = scene.add
+    .text(GAME_WIDTH / 2 - 80, 178, '< TOOLS', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#ffe066', fontStyle: 'bold',
+    })
+    .setOrigin(0.5);
+  scene.buildMenuTabs.buildings = scene.add
+    .text(GAME_WIDTH / 2 + 80, 178, 'BUILDINGS >', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#7a7a82', fontStyle: 'bold',
+    })
+    .setOrigin(0.5);
+  c.add(scene.buildMenuTabs.tools);
+  c.add(scene.buildMenuTabs.buildings);
+
+  // 8 row slots — accommodates TOOL_RECIPES (biggest tab). Unused rows
+  // hidden when on BUILDINGS tab.
   scene.buildMenuRows = [];
-  for (let i = 0; i < BUILD_RECIPES.length; i++) {
+  for (let i = 0; i < BUILD_MENU_ROW_COUNT; i++) {
     const row = {};
-    const y = 220 + i * 32;
-    row.bg = scene.add.rectangle(GAME_WIDTH / 2, y, 400, 26, 0x2a3555, 0).setOrigin(0.5);
-    row.text = scene.add.text(GAME_WIDTH / 2 - 180, y, '', {
-      fontFamily: 'monospace', fontSize: '14px', color: '#ffffff',
+    const y = 215 + i * 25;
+    row.bg = scene.add.rectangle(GAME_WIDTH / 2, y, 420, 22, 0x2a3555, 0).setOrigin(0.5);
+    row.text = scene.add.text(GAME_WIDTH / 2 - 195, y, '', {
+      fontFamily: 'monospace', fontSize: '12px', color: '#ffffff',
     }).setOrigin(0, 0.5);
+    // 1-px line over the row text for crafted/skipped tools.
+    row.strike = scene.add.rectangle(GAME_WIDTH / 2, y, 380, 1, 0x808080, 0).setOrigin(0.5);
     c.add(row.bg);
     c.add(row.text);
+    c.add(row.strike);
     scene.buildMenuRows.push(row);
   }
 
   c.add(
-    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 170,
-      'JOYSTICK UP/DOWN - P1_3 CONFIRM - START CLOSE', {
+    scene.add.text(GAME_WIDTH / 2, 445,
+      'UP/DOWN PICK   L/R TAB   U CONFIRM   I CLOSE', {
       fontFamily: 'monospace', fontSize: '10px', color: '#a0a8b0',
     }).setOrigin(0.5),
   );
@@ -1287,7 +1676,9 @@ function buildBuildMenuUi(scene) {
 
 function openBuildMenu(scene) {
   scene.buildMenu.open = true;
-  scene.buildMenu.cursor = 0;
+  scene.buildMenu.tab = 'tools';
+  const recipes = getCurrentRecipes(scene);
+  scene.buildMenu.cursor = findFirstUnlocked(scene, recipes);
   scene.buildMenuContainer.setVisible(true);
   refreshBuildMenu(scene);
 }
@@ -1299,9 +1690,21 @@ function closeBuildMenu(scene) {
 
 function refreshBuildMenu(scene) {
   const inv = scene.inventory;
-  for (let i = 0; i < BUILD_RECIPES.length; i++) {
-    const recipe = BUILD_RECIPES[i];
+  const recipes = getCurrentRecipes(scene);
+
+  // Tab highlight — active tab in yellow, inactive dim grey.
+  scene.buildMenuTabs.tools.setColor(scene.buildMenu.tab === 'tools' ? '#ffe066' : '#7a7a82');
+  scene.buildMenuTabs.buildings.setColor(scene.buildMenu.tab === 'buildings' ? '#ffe066' : '#7a7a82');
+
+  for (let i = 0; i < scene.buildMenuRows.length; i++) {
     const row = scene.buildMenuRows[i];
+    if (i >= recipes.length) {
+      row.bg.visible = false; row.text.visible = false; row.strike.visible = false;
+      continue;
+    }
+    const recipe = recipes[i];
+    row.bg.visible = true; row.text.visible = true;
+
     let canAfford = true;
     let costStr = '';
     for (let k = 0; k < recipe.cost.length; k++) {
@@ -1309,9 +1712,20 @@ function refreshBuildMenu(scene) {
       if (inv[id] < amt) canAfford = false;
       costStr += (k > 0 ? ' + ' : '') + amt + ' ' + BLOCK_NAME[id].toUpperCase();
     }
-    row.text.setText(recipe.name.padEnd(14) + costStr);
-    row.text.setColor(canAfford ? '#ffffff' : '#7a7a82');
-    const selected = i === scene.buildMenu.cursor;
+    row.text.setText(recipe.name.padEnd(16) + costStr);
+
+    const locked = isRecipeLocked(scene, recipe);
+    let color;
+    if (locked)        color = '#5a5a5a';
+    else if (!canAfford) color = '#7a7a82';
+    else                 color = '#ffffff';
+    row.text.setColor(color);
+
+    // Strike line only for locked rows.
+    row.strike.visible = locked;
+    row.strike.fillAlpha = locked ? 0.8 : 0;
+
+    const selected = !locked && i === scene.buildMenu.cursor;
     row.bg.setFillStyle(0x2a3555, selected ? 0.9 : 0);
     row.bg.setStrokeStyle(selected ? 2 : 0, 0xffe066);
   }
@@ -1319,36 +1733,41 @@ function refreshBuildMenu(scene) {
 
 function handleBuildMenuInput(scene) {
   const c = scene.controls;
-  // I (P1_2) or START toggle the menu closed.
   if (c.pressed.P1_2 || c.pressed.START1) {
     c.pressed.P1_2 = false;
     c.pressed.START1 = false;
     closeBuildMenu(scene);
     return;
   }
-  if (c.pressed.P1_U) {
-    c.pressed.P1_U = false;
-    scene.buildMenu.cursor = (scene.buildMenu.cursor - 1 + BUILD_RECIPES.length) % BUILD_RECIPES.length;
+  // L/R switches tab and snaps cursor to first unlocked.
+  if (c.pressed.P1_L || c.pressed.P1_R) {
+    c.pressed.P1_L = false;
+    c.pressed.P1_R = false;
+    scene.buildMenu.tab = scene.buildMenu.tab === 'tools' ? 'buildings' : 'tools';
+    scene.buildMenu.cursor = findFirstUnlocked(scene, getCurrentRecipes(scene));
     refreshBuildMenu(scene);
+    return;
   }
-  if (c.pressed.P1_D) {
-    c.pressed.P1_D = false;
-    scene.buildMenu.cursor = (scene.buildMenu.cursor + 1) % BUILD_RECIPES.length;
+  // U/D moves cursor, skipping locked rows.
+  if (c.pressed.P1_U || c.pressed.P1_D) {
+    const dir = c.pressed.P1_U ? -1 : 1;
+    c.pressed.P1_U = false; c.pressed.P1_D = false;
+    const next = findNextUnlocked(scene, getCurrentRecipes(scene), scene.buildMenu.cursor, dir);
+    if (next >= 0) scene.buildMenu.cursor = next;
     refreshBuildMenu(scene);
+    return;
   }
-  // U (P1_1) confirms.
   if (c.pressed.P1_1) {
     c.pressed.P1_1 = false;
     confirmBuildRecipe(scene);
   }
-  // Consume other pressed controls so they don't bleed into gameplay on close.
   c.pressed.P1_3 = false;
-  c.pressed.P1_L = false;
-  c.pressed.P1_R = false;
 }
 
 function confirmBuildRecipe(scene) {
-  const recipe = BUILD_RECIPES[scene.buildMenu.cursor];
+  const recipes = getCurrentRecipes(scene);
+  const recipe = recipes[scene.buildMenu.cursor];
+  if (!recipe || isRecipeLocked(scene, recipe)) return;
   const inv = scene.inventory;
   for (const [id, amt] of recipe.cost) {
     if (inv[id] < amt) {
@@ -1357,14 +1776,26 @@ function confirmBuildRecipe(scene) {
     }
   }
 
-  // Tool recipe → equip instead of placing.
-  if (recipe.tool != null) {
-    if (scene.tool >= recipe.tool) {
+  // Pick / sword recipes → upgrade the relevant tool slot.
+  if (recipe.pickTier != null) {
+    if (scene.pick >= recipe.pickTier) {
       showToast(scene, 'ALREADY HAVE IT!');
       return;
     }
     for (const [id, amt] of recipe.cost) inv[id] -= amt;
-    scene.tool = recipe.tool;
+    scene.pick = recipe.pickTier;
+    scene.invDirty = true;
+    showToast(scene, recipe.name + '!');
+    closeBuildMenu(scene);
+    return;
+  }
+  if (recipe.swordTier != null) {
+    if (scene.sword >= recipe.swordTier) {
+      showToast(scene, 'ALREADY HAVE IT!');
+      return;
+    }
+    for (const [id, amt] of recipe.cost) inv[id] -= amt;
+    scene.sword = recipe.swordTier;
     scene.invDirty = true;
     showToast(scene, recipe.name + '!');
     closeBuildMenu(scene);
@@ -1548,6 +1979,221 @@ function nearFurnace(scene, f) {
   const dx = Math.abs(scene.player.x - fcx);
   const dy = Math.abs(scene.player.y - fcy);
   return dx < 3 * TILE && dy < 3 * TILE;
+}
+
+// ============================================================
+// 10.6. Monsters (slime / zombie / flyer)
+// ============================================================
+
+// Generic AABB collision against the world. Used by player AND monsters.
+// p has .x/.y bottom-center + .w/.h.
+function collidesBox(scene, cx, cy, w, h) {
+  const halfW = w / 2;
+  const x0 = ((cx - halfW) / TILE) | 0;
+  const x1 = ((cx + halfW - 0.001) / TILE) | 0;
+  const y0 = ((cy - h) / TILE) | 0;
+  const y1 = ((cy - 0.001) / TILE) | 0;
+  for (let y = y0; y <= y1; y++) {
+    if (y < 0 || y >= WORLD_H) return true;
+    for (let x = x0; x <= x1; x++) {
+      if (x < 0 || x >= WORLD_W) return true;
+      if (isSolidCell(scene.world[y * WORLD_W + x])) return true;
+    }
+  }
+  return false;
+}
+
+function spawnMonstersTick(scene) {
+  scene.monsterSpawnTimer--;
+  if (scene.monsterSpawnTimer > 0) return;
+  scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
+  if (scene.monsters.length >= MONSTER_MAX) return;
+  // Pick a random type. Slimes a bit more common than the others.
+  const r = Math.random();
+  const type = r < 0.45 ? MON_SLIME : r < 0.8 ? MON_ZOMBIE : MON_FLYER;
+  spawnMonster(scene, type);
+}
+
+function spawnMonster(scene, type) {
+  const p = scene.player;
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const offset = GAME_WIDTH / 2 + 24;
+  let x = p.x + side * offset;
+  // Clamp to world.
+  x = Math.max(2 * TILE, Math.min((WORLD_W - 2) * TILE, x));
+  let y;
+  if (type === MON_FLYER) {
+    // Flyers spawn above the player, at the upper edge of the viewport.
+    y = Math.max(8 * TILE, p.y - GAME_HEIGHT * 0.4);
+  } else {
+    // Ground monsters: snap to surface at that x.
+    const tx = Math.max(1, Math.min(WORLD_W - 2, (x / TILE) | 0));
+    const surfY = findSurface(scene.world, tx);
+    y = surfY * TILE;
+  }
+  scene.monsters.push(createMonster(scene, type, x, y));
+}
+
+function createMonster(scene, type, x, y) {
+  const m = {
+    type, x, y, vx: 0, vy: 0,
+    facing: 1, jumpTimer: 0,
+    flashTicks: 0,
+  };
+  // HP scales so that each sword tier meaningfully cuts kill time:
+  //   slime 12 hp  → fists 6, wood 2, stone 1
+  //   zombie 30 hp → fists 15, wood 3, stone 2, copper 1
+  //   flyer 6 hp   → fists 3, wood 1
+  if (type === MON_SLIME)       { m.w = 12; m.h = 8;  m.hp = 12; }
+  else if (type === MON_ZOMBIE) { m.w = 12; m.h = 22; m.hp = 30; }
+  else                          { m.w = 14; m.h = 8;  m.hp = 6;  }
+  m.sprite = buildMonsterVisual(scene, type);
+  return m;
+}
+
+// Damage a monster, with knockback + flash + death cleanup. Caller is
+// responsible for iterating backwards if they call this inside a loop.
+function applyMonsterDamage(scene, m, dmg) {
+  m.hp -= dmg;
+  m.flashTicks = 12;
+  // Knockback away from the player.
+  const knockDir = m.x < scene.player.x ? -1 : 1;
+  m.vx = knockDir * 1.6;
+  if (m.type !== MON_FLYER) m.vy = -1.4;
+  if (m.hp <= 0) {
+    m.sprite.destroy();
+    const idx = scene.monsters.indexOf(m);
+    if (idx >= 0) scene.monsters.splice(idx, 1);
+  }
+}
+
+function buildMonsterVisual(scene, type) {
+  const c = scene.add.container(0, 0).setDepth(9);
+  if (type === MON_SLIME) {
+    c.add(scene.add.rectangle(0, -1.5, 12, 3, 0x44a060));
+    c.add(scene.add.rectangle(0, -4.5, 10, 3, 0x44a060));
+    c.add(scene.add.rectangle(0, -7,    6, 2, 0x44a060));
+    c.add(scene.add.rectangle(-2, -5, 1, 1, 0x101018));
+    c.add(scene.add.rectangle( 2, -5, 1, 1, 0x101018));
+  } else if (type === MON_ZOMBIE) {
+    c.add(scene.add.rectangle(-3, -3, 4, 6, 0x3a4530));      // leg L
+    c.add(scene.add.rectangle( 3, -3, 4, 6, 0x3a4530));      // leg R
+    c.add(scene.add.rectangle( 0, -11, 12, 10, 0x5a7042));   // body
+    c.add(scene.add.rectangle( 0, -19, 10, 8, 0x9eb585));    // head
+    c.add(scene.add.rectangle(-2, -19, 1, 1, 0x101018));     // eye L
+    c.add(scene.add.rectangle( 2, -19, 1, 1, 0x101018));     // eye R
+    c.add(scene.add.rectangle( 0, -16, 4, 1, 0x301010));     // mouth
+  } else {
+    c.add(scene.add.rectangle(-6, -5, 5, 3, 0x501818));      // wing L
+    c.add(scene.add.rectangle( 6, -5, 5, 3, 0x501818));      // wing R
+    c.add(scene.add.rectangle( 0, -4, 6, 6, 0x6a2a30));      // body
+    c.add(scene.add.rectangle(-1, -5, 1, 1, 0xff6060));      // eye L
+    c.add(scene.add.rectangle( 1, -5, 1, 1, 0xff6060));      // eye R
+  }
+  return c;
+}
+
+function tickMonsters(scene) {
+  const p = scene.player;
+  for (let i = 0; i < scene.monsters.length; i++) {
+    tickMonster(scene, scene.monsters[i], p);
+  }
+}
+
+function tickMonster(scene, m, p) {
+  if (m.flashTicks > 0) m.flashTicks--;
+  const dx = p.x - m.x;
+  m.facing = dx >= 0 ? 1 : -1;
+
+  if (m.type === MON_SLIME) {
+    m.vy += GRAVITY;
+    m.jumpTimer--;
+    if (m.jumpTimer <= 0 && monsterOnGround(scene, m)) {
+      m.vy = -3.0;
+      m.vx = m.facing * 1.2;
+      m.jumpTimer = 50 + ((Math.random() * 30) | 0);
+    }
+    moveMonsterWithCollision(scene, m);
+  } else if (m.type === MON_ZOMBIE) {
+    m.vy += GRAVITY;
+    m.vx = m.facing * 0.6;
+    if (monsterOnGround(scene, m) && monsterBlockedAhead(scene, m)) {
+      m.vy = -3.2;
+    }
+    moveMonsterWithCollision(scene, m);
+  } else { // MON_FLYER — no gravity, glides toward player center
+    const dy = (p.y - p.h / 2) - (m.y - m.h / 2);
+    const dist = Math.hypot(dx, dy) || 1;
+    m.vx = (dx / dist) * 0.8;
+    m.vy = (dy / dist) * 0.8;
+    m.x += m.vx;
+    m.y += m.vy;
+  }
+}
+
+function monsterOnGround(scene, m) {
+  m.y += 1;
+  const c = collidesBox(scene, m.x, m.y, m.w, m.h);
+  m.y -= 1;
+  return c;
+}
+
+function monsterBlockedAhead(scene, m) {
+  const probeX = m.x + m.facing * (m.w / 2 + 1);
+  return collidesBox(scene, probeX, m.y - 1, 2, m.h - 2);
+}
+
+function moveMonsterWithCollision(scene, m) {
+  if (m.vy > TERMINAL_VY) m.vy = TERMINAL_VY;
+  if (m.vy < -8) m.vy = -8;
+  m.x += m.vx;
+  if (collidesBox(scene, m.x, m.y, m.w, m.h)) { m.x -= m.vx; m.vx = 0; }
+  m.y += m.vy;
+  if (collidesBox(scene, m.x, m.y, m.w, m.h)) {
+    m.y -= m.vy;
+    if (m.vy > 0) m.y = Math.ceil(m.y / TILE) * TILE;
+    m.vy = 0;
+  }
+}
+
+function checkMonsterDamage(scene) {
+  const p = scene.player;
+  if (p.invulnTicks > 0) { p.invulnTicks--; return; }
+  for (let i = 0; i < scene.monsters.length; i++) {
+    const m = scene.monsters[i];
+    if (aabbOverlap(p, m)) {
+      const dmg = m.type === MON_ZOMBIE ? 2 : 1;
+      applyPlayerDamage(scene, dmg);
+      p.invulnTicks = PLAYER_INVULN_TICKS;
+      return;
+    }
+  }
+}
+
+function aabbOverlap(a, b) {
+  const ax0 = a.x - a.w / 2, ax1 = a.x + a.w / 2;
+  const ay0 = a.y - a.h, ay1 = a.y;
+  const bx0 = b.x - b.w / 2, bx1 = b.x + b.w / 2;
+  const by0 = b.y - b.h, by1 = b.y;
+  return ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0;
+}
+
+function renderMonsters(scene) {
+  for (let i = 0; i < scene.monsters.length; i++) {
+    const m = scene.monsters[i];
+    m.sprite.setPosition(m.x - scene.cam.x, m.y - scene.cam.y);
+    m.sprite.setScale(m.facing < 0 ? -1 : 1, 1);
+    // Flash on hit: blink alpha while flashTicks > 0.
+    m.sprite.setAlpha(m.flashTicks > 0 && (m.flashTicks & 4) ? 0.3 : 1);
+  }
+}
+
+function despawnAllMonsters(scene) {
+  for (let i = 0; i < scene.monsters.length; i++) {
+    scene.monsters[i].sprite.destroy();
+  }
+  scene.monsters.length = 0;
+  scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
 }
 
 // ============================================================
