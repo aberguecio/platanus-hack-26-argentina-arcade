@@ -153,7 +153,7 @@ for (const b of BLOCKS) {
   // Materials list their brick id; build the inverse map for brick drops.
   if (b.brick) BRICK_MAT[b.brick] = b.id;
   // Bricks drop 1 of their raw mat's smelted form. Default amount = 1.
-  if (b.flags & F_IS_BRICK) BLOCK_DROP_TYPE[b.id] = MAT_TO_INGOT[BRICK_MAT[b.id]];
+  if (b.flags & F_IS_BRICK) BLOCK_DROP_TYPE[b.id] = MAT_TO_INGOT[BRICK_MAT[b.id]] || b.id;
   else                      BLOCK_DROP_TYPE[b.id] = b.drop != null ? b.drop : b.id;
   BLOCK_DROP_AMOUNT[b.id] = b.dropAmt != null ? b.dropAmt : 1;
   BLOCK_NAME[b.id] = b.name;
@@ -171,6 +171,7 @@ const ARMOR_BONUS = [0, 4, 8, 14];
 const ARMOR_NAMES = ['NONE', 'COPPER', 'IRON', 'MITHRIL'];
 const _AZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const C_Y = '#ffe066', C_G = '#7a7a82', C_B = '#a0c8ff', C_R = '#ff6666', C_M = '#a0a8b0';
+const FF = 'monospace', FW = '#ffffff';
 const TIER_PICK_NAMES  = TIER_NAMES.map(n => n === 'FISTS' ? n : n + ' PICKAXE');
 const TIER_SWORD_NAMES = TIER_NAMES.map(n => n === 'FISTS' ? n : n + ' SWORD');
 
@@ -229,15 +230,15 @@ const DAY_INCREMENT_SECONDS = 10;
 // Last step holds for TUTORIAL_FINAL_HOLD_TICKS, then hides.
 const TUTORIAL_STEPS = [
   '',
-  'HIT A TREE WITH U',
-  'GET 10 WOOD TOTAL',
-  'OPEN MENU (I), CRAFT WOODEN PICKAXE',
-  'BUILD A BASE: U/D RESIZE, L/R MOVE, U TO PLACE',
-  'PLACE A BED ON THE BASE',
-  'AT NIGHT, DOUBLE-TAP O ON A BED TO SLEEP',
-  'BUILD A FURNACE AND SMELT ORE WITH WOOD',
-  'CLOSE OFF THE BASE — VILLAGERS ARRIVE AT DAWN',
-  '+1 POINT PER VILLAGER ALIVE EACH NIGHT. GOOD LUCK!',
+  'HIT A TREE: U',
+  'GET 10 WOOD',
+  'I: CRAFT WOODEN PICKAXE',
+  'BUILD BASE: U/D SIZE, L/R MOVE, U PLACE',
+  'PLACE A BED',
+  'NIGHT: 2x O ON BED = SLEEP',
+  'BUILD FURNACE, SMELT ORE WITH WOOD',
+  'SEAL THE BASE: VILLAGERS COME AT DAWN',
+  '+1 PER VILLAGER ALIVE AT DAWN. GL!',
   '',
 ];
 const TUTORIAL_FINAL_HOLD_TICKS = 8 * TICK_RATE;
@@ -431,6 +432,7 @@ function create() {
   // squares. 1 tile margin each side enables sub-tile camera offsets.
   const TW = (VW + 2) * TILE;
   const TH = (VH + 2) * TILE;
+  if (scene.textures.exists('world')) scene.textures.remove('world');
   scene.tex = scene.textures.createCanvas('world', TW, TH);
   scene.texCtx = scene.tex.getContext();
   scene.imgData = scene.texCtx.getImageData(0, 0, TW, TH);
@@ -459,6 +461,7 @@ function create() {
   scene.nightTicksRemaining = 0;
   scene.home = { x: scene.player.x, y: scene.player.y };
   scene.daysSurvived = 1;
+  scene.score = 0;
   recomputeDayLengths(scene);
 
   // Health + hazard counters (attached to player for clean grouping).
@@ -477,6 +480,7 @@ function create() {
   const _ps = window.platanusArcadeStorage;
   if (_ps) _ps.get('hs').then(r => {
     if (r.found) scene.highscores = r.value.slice(0, 5);
+    refreshHsText(scene);
   });
 
   // Web Audio context for procedural SFX + music. May be suspended
@@ -498,7 +502,7 @@ function create() {
   if (DEBUG_HUD) {
     scene.hud = scene.add
       .text(GAME_WIDTH - 8, 6, '', {
-        fontFamily: 'monospace', fontSize: '10px', color: '#888888',
+        fontFamily: FF, fontSize: '10px', color: '#888888',
       })
       .setOrigin(1, 0)
       .setDepth(20);
@@ -553,7 +557,7 @@ function generateWorld(w) {
     [110, LAVA,    HARD_ROCK, 165, 505, 4,  3],
     [50,  WATER,   HARD_ROCK, 165, 400, 6,  4],
     [90,  COPPER,  HARD_ROCK, 165, 400, 2,  2],
-    [180, IRON,    HARD_ROCK, 280, 505, 2,  2],
+    [180, IRON,    HARD_ROCK, 165, 505, 2,  2],
     [60,  MITHRIL, HARD_ROCK, 400, 505, 2,  2],
     [140, AIR,     HARD_ROCK, 165, 505, 5,  3],
   ];
@@ -671,7 +675,7 @@ function update(_time, delta) {
   refreshHpHud(scene);
   scene.toolText.setText('TOOL: ' + getActiveToolName(scene) + '  ARM: ' + ARMOR_NAMES[scene.armor]);
   scene.villagerText.setText('VILLAGERS: ' + scene.villagerCount);
-  scene.scoreText.setText('SCORE: ' + (scene.score || 0));
+  scene.scoreText.setText('SCORE: ' + scene.score);
 
   if (DEBUG_HUD) {
     scene.hud.setText(
@@ -737,7 +741,7 @@ function endNight(scene) {
   regrowTrees(scene, 4); // compensate for whatever monsters chewed
   syncVillagers(scene, scanVillages(scene));
   // Score = villagers alive at dawn + 1 for the player (counts as a villager).
-  scene.score = (scene.score || 0) + scene.villagerCount + 1;
+  scene.score += scene.villagerCount + 1;
   showToast(scene, 'DAY BREAKS!');
 }
 
@@ -1039,16 +1043,16 @@ function handleInput(scene) {
       const dv = (c.pressed.P1_U ? 1 : 0) - (c.pressed.P1_D ? 1 : 0);
       if (dv) { c.pressed.P1_U = c.pressed.P1_D = false; ne.letters[ne.cursor] = (ne.letters[ne.cursor] + dv + 26) % 26; dirty = true; }
       if (c.pressed.P1_1) {
-        c.pressed.P1_1 = false;
         const nm = _AZ[ne.letters[0]] + _AZ[ne.letters[1]] + _AZ[ne.letters[2]];
         const hs = scene.highscores;
-        hs.push({ n: nm, s: scene.score || 0, d: scene.daysSurvived });
+        hs.push({ n: nm, s: scene.score, d: scene.daysSurvived });
         hs.sort((a, b) => b.s - a.s);
         if (hs.length > 5) hs.length = 5;
         const ps = window.platanusArcadeStorage;
         if (ps) ps.set('hs', hs);
-        scene.nameEntry = null;
-        dirty = true;
+        scene.deathModal.container.setVisible(false);
+        scene.scene.restart();
+        return;
       }
       if (dirty) refreshDeathModal(scene);
       c.pressed.P1_2 = false; c.pressed.P1_3 = false;
@@ -1491,12 +1495,8 @@ function applyPlayerDamage(scene, amt) {
 function onPlayerDeath(scene) {
   if (scene.gameOver) return;
   scene.gameOver = true;
-  // Drain pressed inputs so name-entry doesn't auto-resolve.
-  const cp = scene.controls.pressed;
-  for (const k in cp) cp[k] = false;
-  const sc = scene.score || 0;
   const hs = scene.highscores;
-  if (hs.length < 5 || sc > hs[hs.length - 1].s) {
+  if (hs.length < 5 || scene.score > hs[hs.length - 1].s) {
     scene.nameEntry = { letters: [0, 0, 0], cursor: 0 };
   }
   refreshDeathModal(scene);
@@ -1505,23 +1505,14 @@ function onPlayerDeath(scene) {
 
 function refreshDeathModal(scene) {
   const ne = scene.nameEntry;
-  let t = 'SCORE: ' + (scene.score || 0) + ' D' + scene.daysSurvived;
+  let t = 'SCORE: ' + scene.score + ' D' + scene.daysSurvived;
   if (ne) {
     let r = '';
     for (let i = 0; i < 3; i++) {
       const c = _AZ[ne.letters[i]];
       r += i === ne.cursor ? '[' + c + ']' : ' ' + c + ' ';
     }
-    t += '\n\nHIGH!\n' + r + '\nL/R U/D';
-  } else {
-    const hs = scene.highscores;
-    if (hs.length) {
-      t += '\n\nTOP 5';
-      for (let i = 0; i < hs.length; i++) {
-        const e = hs[i];
-        t += '\n' + (i + 1) + '. ' + e.n + '  ' + e.s + '  D' + e.d;
-      }
-    }
+    t += '\nHIGH!\n' + r;
   }
   scene.deathModal.statsText.setText(t);
 }
@@ -1770,7 +1761,7 @@ function addDimBox(scene, c, w, h, fill, stroke, dimAlpha) {
 
 // Center-anchored monospace text helper. `opts` extends the style object.
 function mkText(scene, x, y, s, sz, col, opts) {
-  return scene.add.text(x, y, s, { fontFamily: 'monospace', fontSize: sz + 'px', color: col, ...opts }).setOrigin(0.5);
+  return scene.add.text(x, y, s, { fontFamily: FF, fontSize: sz + 'px', color: col, ...opts }).setOrigin(0.5);
 }
 
 function buildHud(scene) {
@@ -1785,7 +1776,7 @@ function buildHud(scene) {
   ];
   for (const [k, y, color] of STATS) {
     scene[k] = scene.add.text(8, y, '', {
-      fontFamily: 'monospace', fontSize: '11px', color,
+      fontFamily: FF, fontSize: '11px', color,
     }).setDepth(20);
   }
 
@@ -1816,7 +1807,7 @@ function buildDeathModalUi(scene) {
   addDimBox(scene, c, 420, 240, 0x240010, 0xff6666, 0.85);
   const cx = GAME_WIDTH / 2, cy = GAME_HEIGHT / 2;
   c.add(mkText(scene, cx, cy - 80, 'YOU DIED', 36, C_R, { fontStyle: 'bold' }));
-  const stats = mkText(scene, cx, cy - 10, '', 14, '#ffffff', { align: 'center', lineSpacing: 4 });
+  const stats = mkText(scene, cx, cy - 10, '', 14, FW, { align: 'center', lineSpacing: 4 });
   c.add(stats);
   c.add(mkText(scene, cx, cy + 80, 'U TO RESTART', 12, C_M));
   scene.deathModal = { container: c, statsText: stats };
@@ -1830,10 +1821,20 @@ function buildTitleUi(scene) {
   c.add(scene.add.rectangle(cx, cy, GAME_WIDTH, GAME_HEIGHT, 0x050810, 0.92));
   c.add(mkText(scene, cx, cy - 80, 'STRIKE AND STONE', 40, C_Y,
     { fontStyle: 'bold', stroke: '#000000', strokeThickness: 4 }));
-  c.add(mkText(scene, cx, cy - 30, 'a falling-sand miner', 14, C_B));
-  c.add(mkText(scene, cx, cy + 40, 'PRESS U TO START', 16, '#ffffff', { fontStyle: 'bold' }));
+  c.add(mkText(scene, cx, cy - 30, 'mine by day, survive the night', 14, C_B));
+  c.add(mkText(scene, cx, cy + 40, 'PRESS U TO START', 16, FW, { fontStyle: 'bold' }));
   c.add(mkText(scene, cx, cy + 78, 'A/D move   W jump   U mine/attack   I menu   O home/sleep', 10, C_G));
+  scene.hsText = mkText(scene, cx, cy + 130, '', 11, C_Y);
+  c.add(scene.hsText);
   scene.titleContainer = c;
+  refreshHsText(scene);
+}
+
+function refreshHsText(scene) {
+  const hs = scene.highscores;
+  let s = hs.length ? 'TOP 5' : '';
+  for (let i = 0; i < hs.length; i++) s += `\n${i+1}. ${hs[i].n} ${hs[i].s} D${hs[i].d}`;
+  scene.hsText.setText(s);
 }
 
 // ----- Tutorial banner -----
@@ -1846,7 +1847,7 @@ function buildTutorialUi(scene) {
   const bg = scene.add.rectangle(0, 0, 460, 26, 0x0a0d18, 0.88).setOrigin(0.5);
   bg.setStrokeStyle(2, 0xffe066);
   const text = scene.add.text(0, 0, '', {
-    fontFamily: 'monospace', fontSize: '11px', color: C_Y,
+    fontFamily: FF, fontSize: '11px', color: C_Y,
     fontStyle: 'bold', align: 'center', lineSpacing: 2,
   }).setOrigin(0.5);
   c.add(bg);
@@ -1911,12 +1912,9 @@ function refreshHpHud(scene) {
 
 function refreshDayTimer(scene) {
   const night = scene.nightActive;
-  const remainingTicks = Math.max(0,
-    night ? scene.nightTicksRemaining : scene.dayLengthTicks - scene.dayTime);
-  const totalSec = remainingTicks / TICK_RATE;
-  const mm = Math.floor(totalSec / 60);
-  const ss = Math.floor(totalSec % 60);
-  scene.dayText.setText((night ? 'NIGHT ' : 'DAY ') + mm + ':' + (ss < 10 ? '0' : '') + ss);
+  const r = Math.max(0, night ? scene.nightTicksRemaining : scene.dayLengthTicks - scene.dayTime) / TICK_RATE | 0;
+  const ss = r % 60;
+  scene.dayText.setText((night ? 'NIGHT ' : 'DAY ') + (r / 60 | 0) + ':' + (ss < 10 ? '0' : '') + ss);
   scene.dayText.setColor(night ? '#8888ff' : C_B);
 }
 
@@ -1951,7 +1949,7 @@ function refreshInventoryHud(scene) {
       const icon = scene.add.rectangle(0, row * 14, 10, 10, 0).setOrigin(0).setDepth(20);
       const text = scene.add
         .text(14, row * 14 - 1, '', {
-          fontFamily: 'monospace', fontSize: '11px', color: '#ffffff',
+          fontFamily: FF, fontSize: '11px', color: FW,
         })
         .setDepth(20);
       scene.invHud.container.add(icon);
@@ -2062,7 +2060,7 @@ function buildBuildMenuUi(scene) {
     const y = 165 + i * BUILD_MENU_ROW_STEP;
     row.bg = scene.add.rectangle(GAME_WIDTH / 2, y, 420, BUILD_MENU_ROW_STEP - 2, 0x2a3555, 0).setOrigin(0.5);
     row.text = scene.add.text(GAME_WIDTH / 2 - 195, y, '', {
-      fontFamily: 'monospace', fontSize: '11px', color: '#ffffff',
+      fontFamily: FF, fontSize: '11px', color: FW,
     }).setOrigin(0, 0.5);
     row.strike = scene.add.rectangle(GAME_WIDTH / 2, y, 380, 1, 0x808080, 0).setOrigin(0.5);
     c.add(row.bg);
@@ -2110,7 +2108,7 @@ function refreshBuildMenu(scene) {
     let color;
     if (locked)        color = '#5a5a5a';
     else if (!canAfford) color = C_G;
-    else                 color = '#ffffff';
+    else                 color = FW;
     row.text.setColor(color);
 
     row.strike.visible = locked;
@@ -2563,8 +2561,7 @@ function tickGhostSpawner(scene) {
   if (--scene.ghostSpawnTimer > 0) return;
   scene.ghostSpawnTimer = 4 * TICK_RATE;
   let g = 0;
-  for (const m of scene.monsters) if (m.type === MON_GHOST) g++;
-  if (g >= 3) return;
+  for (const m of scene.monsters) if (m.type === MON_GHOST && ++g >= 3) return;
   const x = (Math.random() < 0.5 ? 2 : WORLD_W - 3) * TILE;
   const y = (WORLD_H - 10) * TILE;
   scene.monsters.push(createMonster(scene, MON_GHOST, x, y));
@@ -2574,9 +2571,9 @@ function spawnMonster(scene, type) {
   const p = scene.player;
   let x, y;
   if (type === MON_SLIME) {
-    // Sky-rain: random X within viewport, spawn just above camera top.
-    x = scene.cam.x + Math.random() * GAME_WIDTH;
-    x = Math.max(2 * TILE, Math.min((WORLD_W - 2) * TILE, x));
+    // Sky-rain: viewport split in 3 slots so consecutive slimes spread out.
+    x = clamp(scene.cam.x + (scene.monsters.length % 3 + Math.random()) * (GAME_WIDTH / 3),
+              2 * TILE, (WORLD_W - 2) * TILE);
     y = Math.max(2 * TILE, scene.cam.y - 20);
   } else {
     const side = Math.random() < 0.5 ? -1 : 1;
