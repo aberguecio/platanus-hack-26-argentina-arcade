@@ -200,8 +200,8 @@ BUILDING_RECIPES.push(
 const PLACEMENT_DEFAULTS = {
   base:    { minW: 2, maxW: 20, minH: 1, maxH: 1,  resize: 'w' },
   wall:    { minW: 1, maxW: 1,  minH: 2, maxH: 16, resize: 'h' },
-  stair:   { minW: 1, maxW: 1,  minH: 2, maxH: 10, resize: 'h' },
-  door:    { minW: 1, maxW: 1,  minH: 2, maxH: 16, resize: 'h' },
+  stair:   { minW: 1, maxW: 1,  minH: 2, maxH: 16, resize: 'h' },
+  door:    { minW: 1, maxW: 1,  minH: 2, maxH: 4,  resize: 'h' },
   furnace: { minW: 2, maxW: 2,  minH: 2, maxH: 2,  resize: null },
   bed:     { minW: 2, maxW: 2,  minH: 1, maxH: 1,  resize: null },
 };
@@ -228,7 +228,6 @@ const TUTORIAL_STEPS = [
   'OPEN MENU (I), CRAFT WOODEN PICKAXE',
   'BUILD A BASE: U/D RESIZE, L/R MOVE, U TO PLACE',
   'PLACE A BED ON THE BASE',
-  'TIRED? DOUBLE-TAP O TO SKIP TO NIGHT',
   'AT NIGHT, DOUBLE-TAP O ON A BED TO SLEEP',
   'BUILD A FURNACE AND SMELT ORE WITH WOOD',
   'CLOSE OFF THE BASE — VILLAGERS ARRIVE AT DAWN',
@@ -1360,8 +1359,9 @@ function handleOPress(scene) {
       scene.nightTicksRemaining -= bed === BED_IRON ? (scene.nightLengthTicks / 2) | 0 : 30 * TICK_RATE;
       scene.sleptThisNight = true;
       scene.everSlept = true;
+      scene.home.x = scene.player.x; scene.home.y = scene.player.y;
       showToast(scene, 'ZZZ...');
-    } else { goHome(scene); scene.everSkipped = true; }
+    } else goHome(scene);
     return;
   }
   showToast(scene, night ? 'O AGAIN: SLEEP' : 'O AGAIN: SKIP');
@@ -1876,10 +1876,9 @@ function tickTutorial(scene) {
   if (t.step === 3 && scene.pick >= TIER_WOOD) { setTutorialStep(scene, 4); return; }
   if (t.step === 4 && scene.basePlaced) { setTutorialStep(scene, 5); return; }
   if (t.step === 5 && scene.bedPlaced) { setTutorialStep(scene, 6); return; }
-  if (t.step === 6 && scene.everSkipped) { setTutorialStep(scene, 7); return; }
-  if (t.step === 7 && scene.everSlept) { setTutorialStep(scene, 8); return; }
-  if (t.step === 8 && scene.smeltedAny) { setTutorialStep(scene, 9); return; }
-  if (t.step === 9 && scene.villagerCount >= 1) { setTutorialStep(scene, 10); return; }
+  if (t.step === 6 && scene.everSlept) { setTutorialStep(scene, 7); return; }
+  if (t.step === 7 && scene.smeltedAny) { setTutorialStep(scene, 8); return; }
+  if (t.step === 8 && scene.villagerCount >= 1) { setTutorialStep(scene, 9); return; }
   if (t.step === TUTORIAL_FINAL_STEP && scene.tickCount >= t.finalDismissTick) {
     setTutorialStep(scene, TUTORIAL_FINAL_STEP + 1);
   }
@@ -2229,7 +2228,7 @@ function confirmBuildRecipe(scene) {
 function isStructuralTile(cell) {
   const t = cell & TYPE_MASK;
   return t === BRICK_DIRT || t === BRICK_STONE || t === BRICK_COPPER || t === BRICK_IRON ||
-    t === FURNACE || t === DOOR_WOOD ||
+    t === OBSIDIAN || t === FURNACE || t === DOOR_WOOD ||
     t === STAIR_WOOD || t === BED_WOOD || t === BED_IRON;
 }
 
@@ -2434,13 +2433,14 @@ function attemptPlacement(scene) {
     });
   }
 
-  // Bases double as home: next night teleports here.
-  if (recipe.kind === 'base') {
+  // The bed is the player's home: night teleports to the most recently
+  // placed bed (or the spawn if none).
+  if (recipe.kind === 'base') scene.basePlaced = true;
+  if (recipe.kind === 'bed') {
     scene.home.x = (p_.tx + p_.w / 2) * TILE;
     scene.home.y = p_.ty * TILE;
-    scene.basePlaced = true;
+    scene.bedPlaced = true;
   }
-  if (recipe.kind === 'bed') scene.bedPlaced = true;
 
   scene.invDirty = true;
   scene.dirtyMineral = true;
@@ -2921,44 +2921,72 @@ function despawnAllMonsters(scene) {
 // ----- Villagers: 9..80-cell rooms with ≥1 bed and ≥1 built wall.
 const VILLAGER_BODY_COLORS = [0x4060a0, 0xa04060];
 
-// Returns array of [bedIdx, bedKind] pairs, one per bed in a valid room.
+// Returns [bedIdx, bedKind] pairs, one per bed in a valid sealed room.
+//
+// Two-pass strategy (the only correct way to detect a sealed pocket):
+//   1) Flood-fill from the world's outer ring, marking every AIR/decor
+//      cell connected to the world border. Anything reachable from the
+//      outside is "open air".
+//   2) Any AIR cell still unmarked is in a SEALED pocket. For each pocket
+//      flood it, count volume, beds, and structural walls. If it meets
+//      the size + bed + wall thresholds, it's a valid house.
+//
+// Why two passes: a one-pass flood that bails on `vol > 80` leaves
+// "scarred" visited cells that can fake-seal a partially-open room when
+// the next flood meets the scar. The border-first pass guarantees that
+// if there's any path to the outside, the room is correctly marked open.
 function scanVillages(scene) {
   const w = scene.world;
   const visited = scene.visited;
   scene.visitedTag = (scene.visitedTag + 1) & 0xff;
   if (scene.visitedTag === 0) { visited.fill(0); scene.visitedTag = 1; }
   const tag = scene.visitedTag;
-  const queue = scene.bfsQueue;
   const out = [];
-  for (let s = 0; s < WORLD_W * WORLD_H; s++) {
+  // Larger queue than bfsQueue; the outside flood may hold most of the sky.
+  const Q = new Int32Array(WORLD_W * WORLD_H);
+  let qh = 0, qt = 0;
+  const enq = (i) => {
+    if (visited[i] === tag) return;
+    const cat = BLOCK_CAT[w[i] & TYPE_MASK];
+    if (cat === CAT_AIR || cat === CAT_DECOR) { visited[i] = tag; Q[qt++] = i; }
+  };
+  // Pass 1: seed from the inner ring (one tile inside the BORDER frame).
+  for (let x = 1; x < WORLD_W - 1; x++) {
+    enq(WORLD_W + x);
+    enq((WORLD_H - 2) * WORLD_W + x);
+  }
+  for (let y = 1; y < WORLD_H - 1; y++) {
+    enq(y * WORLD_W + 1);
+    enq(y * WORLD_W + WORLD_W - 2);
+  }
+  while (qh < qt) {
+    const idx = Q[qh++];
+    enq(idx - 1); enq(idx + 1);
+    enq(idx - WORLD_W); enq(idx + WORLD_W);
+  }
+  // Pass 2: any AIR still unmarked is a sealed pocket.
+  for (let s = WORLD_W; s < (WORLD_H - 1) * WORLD_W; s++) {
     if (visited[s] === tag) continue;
     if ((w[s] & TYPE_MASK) !== AIR) continue;
-    let qh = 0, qt = 0;
-    queue[qt++] = s; visited[s] = tag;
-    let vol = 0, ok = 1, builtWalls = 0;
+    qh = 0; qt = 0;
+    Q[qt++] = s; visited[s] = tag;
+    let vol = 0, builtWalls = 0;
     const beds = [];
-    while (qh < qt) {
-      const idx = queue[qh++];
-      if (++vol > 80) { ok = 0; break; }
-      const x = idx % WORLD_W, y = (idx / WORLD_W) | 0;
-      if (x <= 1 || x >= WORLD_W - 2 || y <= 1 || y >= WORLD_H - 2) { ok = 0; break; }
+    while (qh < qt && vol <= 80) {
+      const idx = Q[qh++];
+      vol++;
       const nbrs = [idx - 1, idx + 1, idx - WORLD_W, idx + WORLD_W];
       for (let k = 0; k < 4; k++) {
         const n = nbrs[k];
         if (visited[n] === tag) continue;
         const nt = w[n] & TYPE_MASK;
-        const ncat = BLOCK_CAT[nt];
-        // AIR + decor (leaves/clouds) propagate the flood — they don't
-        // seal the room (so trees/clouds over an open base don't make
-        // it look enclosed).
-        if (ncat === CAT_AIR || ncat === CAT_DECOR) {
-          visited[n] = tag;
-          if (qt < queue.length) queue[qt++] = n;
-        } else if (nt === BED_WOOD || nt === BED_IRON) { visited[n] = tag; beds.push(n, nt); }
+        const cat = BLOCK_CAT[nt];
+        if (cat === CAT_AIR || cat === CAT_DECOR) { visited[n] = tag; Q[qt++] = n; }
+        else if (nt === BED_WOOD || nt === BED_IRON) { visited[n] = tag; beds.push(n, nt); }
         else if (isStructuralTile(w[n])) builtWalls++;
       }
     }
-    if (ok && vol >= 9 && beds.length && builtWalls > 0)
+    if (vol <= 80 && vol >= 9 && beds.length && builtWalls > 0)
       for (let i = 0; i < beds.length; i += 2) out.push(beds[i], beds[i + 1]);
   }
   return out;
