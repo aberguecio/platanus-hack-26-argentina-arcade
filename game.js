@@ -66,18 +66,17 @@ const AIR = 0, DIRT = 1, SAND = 2, WATER = 3, STONE = 4,
       DOOR_WOOD = 21, STAIR_WOOD = 22,
       BED_WOOD = 23, BED_IRON = 24,
       OBSIDIAN = 25,
-      HARD_ROCK = 26; // deep base layer, 2× stone hardness
+      HARD_ROCK = 26, // deep base layer, 2× stone hardness
+      MITHRIL = 27,   // end-game tool material, deepest vein
+      MITHRIL_INGOT = 28;
 
-// Per-block semantic flags. Drive procedural recipe generation and the
-// render-time texture pattern (brick edge / vein inset square). Adding a
-// new mineral = set F_IS_VEIN + F_FOR_TOOL/F_FOR_BUILD as appropriate.
+// Per-block flags. Drive procedural recipe generation and the
+// render-time texture pattern (brick edge / vein inset square).
 const F_FOR_TOOL = 1;
 const F_FOR_BUILD = 2;
-const F_IS_MINERAL = 4;   // requires smelting (vein → ingot)
-const F_RAW = 8;          // used as-is (no smelter step)
-const F_IS_BASE = 16;     // world default fill at this depth band
-const F_IS_VEIN = 32;     // generated as small pockets inside a base
-const F_IS_BRICK = 64;    // placed-building tile — render with outlined edge
+const F_IS_VEIN = 4;      // generated as small pockets inside a base
+const F_IS_BRICK = 8;     // placed-building tile — render with outlined edge
+const F_IS_MINERAL = 16;  // smeltable in furnace (raw → MAT_TO_INGOT[id])
 
 // Colors are packed little-endian 0xAABBGGRR for direct Uint32 writes.
 // Hardness/TIER_DAMAGE share a damage-units scale (fist=2, wood pick=10,
@@ -89,15 +88,15 @@ const F_IS_BRICK = 64;    // placed-building tile — render with outlined edge
 const BLOCKS = [
   // id, name, cat, color, fallTicks, hardness, flags, [tier], [brick]
   { id: AIR,    name: 'air',    cat: CAT_AIR,      color: 0xff0a0d18, fallTicks: 0,  hardness: 0,  flags: 0 },
-  { id: DIRT,   name: 'dirt',   cat: CAT_SOLID,    color: 0xff2c4f7a, fallTicks: 15, hardness: 10, flags: F_FOR_BUILD | F_RAW | F_IS_BASE, brick: BRICK_DIRT },
-  { id: SAND,   name: 'sand',   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 12, hardness: 10, flags: F_RAW },
+  { id: DIRT,   name: 'dirt',   cat: CAT_SOLID,    color: 0xff2c4f7a, fallTicks: 15, hardness: 10, flags: F_FOR_BUILD, brick: BRICK_DIRT },
+  { id: SAND,   name: 'sand',   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 12, hardness: 10, flags: 0 },
   { id: WATER,  name: 'water',  cat: CAT_LIQUID,   color: 0xffd88030, fallTicks: 5,  hardness: 10, flags: 0 },
-  { id: STONE,  name: 'stone',  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 15, hardness: 20, flags: F_FOR_TOOL | F_FOR_BUILD | F_RAW | F_IS_BASE, tier: 2, brick: BRICK_STONE },
+  { id: STONE,  name: 'stone',  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 15, hardness: 20, flags: F_FOR_TOOL | F_FOR_BUILD, tier: 2, brick: BRICK_STONE },
   { id: LAVA,   name: 'lava',   cat: CAT_LIQUID,   color: 0xff1840f0, fallTicks: 30, hardness: 50, flags: 0 },
-  { id: COPPER, name: 'copper', cat: CAT_MINERAL,  color: 0xff3070c0, fallTicks: 20, hardness: 40, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_MINERAL | F_IS_VEIN, tier: 3, brick: BRICK_COPPER },
-  { id: IRON,   name: 'iron',   cat: CAT_MINERAL,  color: 0xff8090a0, fallTicks: 20, hardness: 80, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_MINERAL | F_IS_VEIN, tier: 4, brick: BRICK_IRON },
+  { id: COPPER, name: 'copper', cat: CAT_MINERAL,  color: 0xff3070c0, fallTicks: 20, hardness: 40, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_VEIN | F_IS_MINERAL, tier: 3, brick: BRICK_COPPER },
+  { id: IRON,   name: 'iron',   cat: CAT_MINERAL,  color: 0xff8090a0, fallTicks: 20, hardness: 80, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_VEIN | F_IS_MINERAL, tier: 4, brick: BRICK_IRON },
   { id: BORDER, name: 'border', cat: CAT_MAGIC,    color: 0xff1a1a1a, fallTicks: 0,  hardness: 0,  flags: 0 },
-  { id: WOOD,         name: 'wood',         cat: CAT_SOLID, color: 0xff1d3a6e, fallTicks: 15, hardness: 4,  flags: F_FOR_TOOL | F_RAW, tier: 1 },
+  { id: WOOD,         name: 'wood',         cat: CAT_SOLID, color: 0xff1d3a6e, fallTicks: 15, hardness: 4,  flags: F_FOR_TOOL, tier: 1 },
   { id: COPPER_INGOT, name: 'copper ingot', cat: CAT_AIR,   color: 0xff3a80d0, fallTicks: 0,  hardness: 0,  flags: 0 },
   { id: IRON_INGOT,   name: 'iron ingot',   cat: CAT_AIR,   color: 0xffc8d4de, fallTicks: 0,  hardness: 0,  flags: 0 },
   { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC, color: 0xff3a3a40, fallTicks: 0,  hardness: 200, flags: 0, drop: STONE, dropAmt: 40 },
@@ -113,13 +112,17 @@ const BLOCKS = [
   { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC, color: 0xff3478b0, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
   { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC, color: 0xff4050c0, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
   { id: BED_IRON,     name: 'iron bed',     cat: CAT_MAGIC, color: 0xff606890, fallTicks: 0, hardness: 80, flags: 0, drop: IRON_INGOT, dropAmt: 1 },
-  { id: OBSIDIAN,     name: 'obsidian',     cat: CAT_MAGIC, color: 0xff40182a, fallTicks: 0, hardness: 160, flags: 0 },
+  { id: OBSIDIAN,     name: 'obsidian',     cat: CAT_MAGIC, color: 0xff40182a, fallTicks: 0, hardness: 160, flags: F_FOR_BUILD | F_IS_BRICK, brick: OBSIDIAN },
   // Hard rock: 2× stone hardness, the deep-world base layer below stone.
-  { id: HARD_ROCK,    name: 'hard rock',    cat: CAT_MINERAL, color: 0xff353038, fallTicks: 15, hardness: 40, flags: F_RAW | F_IS_BASE },
+  { id: HARD_ROCK,    name: 'hard rock',    cat: CAT_MINERAL, color: 0xff353038, fallTicks: 15, hardness: 40, flags: 0 },
+  { id: MITHRIL,      name: 'mithril',      cat: CAT_MINERAL, color: 0xffd0c8a8, fallTicks: 20, hardness: 160, flags: F_FOR_TOOL | F_IS_VEIN | F_IS_MINERAL, tier: 5 },
+  { id: MITHRIL_INGOT,name: 'mithril ingot',cat: CAT_AIR,     color: 0xffe0e8f0, fallTicks: 0,  hardness: 0,   flags: 0 },
 ];
 
-// raw mat → smelted equivalent (used for brick drops + tool tier costs).
-const MAT_TO_INGOT = { [DIRT]: DIRT, [STONE]: STONE, [COPPER]: COPPER_INGOT, [IRON]: IRON_INGOT };
+// raw mat → smelted equivalent (brick drops + tool tier costs + furnace).
+const MAT_TO_INGOT = { [DIRT]: DIRT, [STONE]: STONE, [COPPER]: COPPER_INGOT, [IRON]: IRON_INGOT, [MITHRIL]: MITHRIL_INGOT };
+// Parallel arrays of smeltable ores → their ingot. Filled from BLOCKS.
+const ORE_RAWS = [], ORE_INGOTS = [];
 // brick id → its raw material. Drops 10× of MAT_TO_INGOT[mat].
 const BRICK_MAT = { [BRICK_DIRT]: DIRT, [BRICK_STONE]: STONE, [BRICK_COPPER]: COPPER, [BRICK_IRON]: IRON };
 
@@ -147,14 +150,15 @@ for (const b of BLOCKS) {
     BLOCK_DROP_AMOUNT[b.id] = b.dropAmt != null ? b.dropAmt : 1;
   }
   BLOCK_NAME[b.id] = b.name;
+  if (b.flags & F_IS_MINERAL) { ORE_RAWS.push(b.id); ORE_INGOTS.push(MAT_TO_INGOT[b.id]); }
 }
 
 // ----- Tools: tier-based damage shared between picks and swords. -----
 // Day → pick, night → sword (auto via getActiveTier). Tool slots track
 // independently. Tier 0 = fists.
-const TIER_FIST = 0, TIER_WOOD = 1, TIER_STONE = 2, TIER_COPPER = 3, TIER_IRON = 4;
-const TIER_DAMAGE = [2, 7, 15, 30, 50];
-const TIER_NAMES = ['FISTS', 'WOODEN', 'STONE', 'COPPER', 'IRON'];
+const TIER_FIST = 0, TIER_WOOD = 1;
+const TIER_DAMAGE = [2, 7, 15, 30, 50, 80];
+const TIER_NAMES = ['FISTS', 'WOODEN', 'STONE', 'COPPER', 'IRON', 'MITHRIL'];
 const TIER_PICK_NAMES  = TIER_NAMES.map((n, i) => i === 0 ? 'FISTS' : n + ' PICKAXE');
 const TIER_SWORD_NAMES = TIER_NAMES.map((n, i) => i === 0 ? 'FISTS' : n + ' SWORD');
 
@@ -516,14 +520,13 @@ function generateWorld(w) {
     [40,  WATER,  STONE,     70,  155, 9,  6],
     [25,  LAVA,   STONE,     140, 160, 3,  2],
     [80,  COPPER, STONE,     90,  158, 2,  2],
-    [55,  IRON,   STONE,     120, 158, 2,  2],
     [90,  AIR,    STONE,     75,  160, 4,  2],
-    [25,  AIR,    DIRT,      60,  72,  3,  1],
     [110, LAVA,   HARD_ROCK, 165, 505, 4,  3],
     [50,  WATER,  HARD_ROCK, 165, 400, 6,  4],
     [90,  COPPER, HARD_ROCK, 165, 400, 2,  2],
-    [130, IRON,   HARD_ROCK, 200, 505, 2,  2],
-    [140, AIR,    HARD_ROCK, 165, 505, 5,  3],
+    [180, IRON,    HARD_ROCK, 280, 505, 2,  2],
+    [60,  MITHRIL, HARD_ROCK, 400, 505, 2,  2],
+    [140, AIR,     HARD_ROCK, 165, 505, 5,  3],
   ];
   for (const v of VEINS) pocket(v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
 
@@ -772,11 +775,11 @@ function simulateViewport(scene) {
       if (fall === 0) continue;            // AIR or MAGIC
       if (tick % fall !== 0) continue;     // throttle (lava=4 → every 4th tick)
       const cat = BLOCK_CAT[t];
-      if (cat === CAT_LIQUID)        tryLiquid(w, damage, idx, x, tick);
-      else if (cat === CAT_SANDLIKE) trySandlike(w, damage, idx, x, tick);
-      else if (cat === CAT_SOLID)    trySolid(w, damage, idx);
-      else if (cat === CAT_MINERAL && (cell & FALLING_FLAG))
-        tryMineral(scene, w, damage, idx, x, tick);
+      // MINERAL only falls while flagged isolated. Other physics cats
+      // pick up their behavior bitmask from FALL_BEHAVIOR[cat].
+      if (cat === CAT_MINERAL && !(cell & FALLING_FLAG)) continue;
+      const fb = FALL_BEHAVIOR[cat];
+      if (fb !== undefined) tryFall(scene, w, damage, idx, x, tick, t, fb);
     }
   }
 
@@ -789,107 +792,68 @@ function simulateViewport(scene) {
   }
 }
 
-// down → diagonal-down (alternating bias) → sides (alternating bias)
-function tryLiquid(w, damage, idx, x, tick) {
-  const myType = w[idx] & TYPE_MASK;
+// Unified fall behavior. Each category gets a bitmask describing which
+// of the 4 ordered steps it tries: down → swap-liquid → diagonal-down →
+// sideways. SOLID has no flags (only step 1). MINERAL adds FB_FALLING
+// to persist FALLING_FLAG and signal the stability BFS.
+const FB_DIAGONAL    = 1;
+const FB_SIDEWAYS    = 2;
+const FB_SWAP_LIQUID = 4;
+const FB_FALLING     = 8;
+
+const FALL_BEHAVIOR = new Uint8Array(7);
+FALL_BEHAVIOR[CAT_LIQUID]   = FB_DIAGONAL | FB_SIDEWAYS;
+FALL_BEHAVIOR[CAT_SANDLIKE] = FB_DIAGONAL | FB_SWAP_LIQUID;
+FALL_BEHAVIOR[CAT_SOLID]    = 0;
+FALL_BEHAVIOR[CAT_MINERAL]  = FB_DIAGONAL | FB_SWAP_LIQUID | FB_FALLING;
+
+function tryFall(scene, w, damage, idx, x, tick, t, fb) {
   const dIdx = idx + WORLD_W;
-  if ((w[dIdx] & TYPE_MASK) === AIR) {
-    w[dIdx] = myType | MOVED_FLAG; w[idx] = AIR; damage[idx] = 0;
+  const downCell = w[dIdx];
+  const downCat = BLOCK_CAT[downCell & TYPE_MASK];
+  const writeFlags = MOVED_FLAG | ((fb & FB_FALLING) ? FALLING_FLAG : 0);
+  const dirty = fb & FB_FALLING;
+
+  // 1. Straight down.
+  if (downCat === CAT_AIR) {
+    w[dIdx] = t | writeFlags; w[idx] = AIR; damage[idx] = 0;
+    if (dirty) scene.dirtyMineral = true;
     return;
   }
-  const bias = (tick & 1) ? 1 : -1;
-  // Diagonal down
-  for (let dir = 0; dir < 2; dir++) {
-    const dx = (dir === 0) ? bias : -bias;
-    const nx = x + dx;
-    if (nx < 1 || nx >= WORLD_W - 1) continue;
-    if ((w[dIdx + dx] & TYPE_MASK) === AIR) {
-      w[dIdx + dx] = myType | MOVED_FLAG; w[idx] = AIR; damage[idx] = 0;
-      return;
-    }
-  }
-  // Sideways
-  for (let dir = 0; dir < 2; dir++) {
-    const dx = (dir === 0) ? bias : -bias;
-    const nx = x + dx;
-    if (nx < 1 || nx >= WORLD_W - 1) continue;
-    if ((w[idx + dx] & TYPE_MASK) === AIR) {
-      w[idx + dx] = myType | MOVED_FLAG; w[idx] = AIR; damage[idx] = 0;
-      return;
-    }
-  }
-}
-
-// down → diagonal-down. Sandlike sinks through liquid (swap).
-function trySandlike(w, damage, idx, x, tick) {
-  const myType = w[idx] & TYPE_MASK;
-  const dIdx = idx + WORLD_W;
-  const bCat = BLOCK_CAT[w[dIdx] & TYPE_MASK];
-  if (bCat === CAT_AIR) {
-    w[dIdx] = myType | MOVED_FLAG; w[idx] = AIR; damage[idx] = 0;
-    return;
-  }
-  if (bCat === CAT_LIQUID) {
-    const liq = w[dIdx] & TYPE_MASK;
-    w[dIdx] = myType | MOVED_FLAG; w[idx] = liq | MOVED_FLAG; damage[idx] = 0;
-    return;
-  }
-  const bias = (tick & 1) ? 1 : -1;
-  for (let dir = 0; dir < 2; dir++) {
-    const dx = (dir === 0) ? bias : -bias;
-    const nx = x + dx;
-    if (nx < 1 || nx >= WORLD_W - 1) continue;
-    if (BLOCK_CAT[w[dIdx + dx] & TYPE_MASK] === CAT_AIR) {
-      w[dIdx + dx] = myType | MOVED_FLAG; w[idx] = AIR; damage[idx] = 0;
-      return;
-    }
-  }
-}
-
-// down only — the "block"-style behavior (dirt).
-function trySolid(w, damage, idx) {
-  const myType = w[idx] & TYPE_MASK;
-  const dIdx = idx + WORLD_W;
-  if ((w[dIdx] & TYPE_MASK) === AIR) {
-    w[dIdx] = myType | MOVED_FLAG; w[idx] = AIR; damage[idx] = 0;
-  }
-}
-
-// MINERAL when isolated: behaves like SAND but keeps its type id (so colour
-// is preserved) and the FALLING_FLAG persists across ticks until the BFS
-// re-anchors it.
-function tryMineral(scene, w, damage, idx, x, tick) {
-  const myType = w[idx] & TYPE_MASK;
-  const dIdx = idx + WORLD_W;
-  const bCat = BLOCK_CAT[w[dIdx] & TYPE_MASK];
-  if (bCat === CAT_AIR) {
-    w[dIdx] = myType | MOVED_FLAG | FALLING_FLAG; w[idx] = AIR;
+  // 2. Swap with liquid below (sandlike, mineral).
+  if ((fb & FB_SWAP_LIQUID) && downCat === CAT_LIQUID) {
+    w[dIdx] = t | writeFlags;
+    w[idx] = (downCell & TYPE_MASK) | MOVED_FLAG;
     damage[idx] = 0;
-    scene.dirtyMineral = true;
-    return;
-  }
-  if (bCat === CAT_LIQUID) {
-    const liq = w[dIdx] & TYPE_MASK;
-    w[dIdx] = myType | MOVED_FLAG | FALLING_FLAG;
-    w[idx] = liq | MOVED_FLAG;
-    damage[idx] = 0;
-    scene.dirtyMineral = true;
+    if (dirty) scene.dirtyMineral = true;
     return;
   }
   const bias = (tick & 1) ? 1 : -1;
-  for (let dir = 0; dir < 2; dir++) {
-    const dx = (dir === 0) ? bias : -bias;
-    const nx = x + dx;
-    if (nx < 1 || nx >= WORLD_W - 1) continue;
-    if (BLOCK_CAT[w[dIdx + dx] & TYPE_MASK] === CAT_AIR) {
-      w[dIdx + dx] = myType | MOVED_FLAG | FALLING_FLAG; w[idx] = AIR;
-      damage[idx] = 0;
-      scene.dirtyMineral = true;
-      return;
+  // 3. Diagonal-down with alternating bias.
+  if (fb & FB_DIAGONAL) {
+    for (let dir = 0; dir < 2; dir++) {
+      const dx = (dir === 0) ? bias : -bias;
+      const nx = x + dx;
+      if (nx < 1 || nx >= WORLD_W - 1) continue;
+      if (BLOCK_CAT[w[dIdx + dx] & TYPE_MASK] === CAT_AIR) {
+        w[dIdx + dx] = t | writeFlags; w[idx] = AIR; damage[idx] = 0;
+        if (dirty) scene.dirtyMineral = true;
+        return;
+      }
     }
   }
-  // Stalled — leave FALLING_FLAG set; it'll re-try next tick. BFS will
-  // clear the flag if it's now part of an anchored chain.
+  // 4. Sideways (liquid only).
+  if (fb & FB_SIDEWAYS) {
+    for (let dir = 0; dir < 2; dir++) {
+      const dx = (dir === 0) ? bias : -bias;
+      const nx = x + dx;
+      if (nx < 1 || nx >= WORLD_W - 1) continue;
+      if ((w[idx + dx] & TYPE_MASK) === AIR) {
+        w[idx + dx] = t | writeFlags; w[idx] = AIR; damage[idx] = 0;
+        return;
+      }
+    }
+  }
 }
 
 // ============================================================
@@ -1710,13 +1674,6 @@ function updatePlayerVisual(scene) {
     const swing = Math.sin(t * Math.PI);
     parts.pickHandle.visible = true;
     parts.pickHead.visible = true;
-    if (scene.nightActive) {
-      parts.pickHandle.fillColor = 0x707070;
-      parts.pickHead.fillColor   = 0xe0e8f0;
-    } else {
-      parts.pickHandle.fillColor = 0x6b4226;
-      parts.pickHead.fillColor   = 0xb0b0b0;
-    }
     const pose = SWING_POSES[scene.mineDy + 1];
     const a = pose[2] + swing * pose[3];
     parts.pickHandle.x = flip * pose[0];
@@ -2466,9 +2423,9 @@ function attemptPlacement(scene) {
     indicator.setVisible(false);
     scene.furnaces.push({
       cx: p_.tx, cy: p_.ty - 1,
-      input: new Uint16Array(2),
+      input: new Uint16Array(ORE_RAWS.length),
       fuel: 0,
-      output: new Uint16Array(2),
+      output: new Uint16Array(ORE_RAWS.length),
       smeltIdx: -1,
       smeltProgress: 0,
       indicator,
@@ -2507,48 +2464,39 @@ function tickFurnaces(scene) {
   const n = scene.furnaces.length;
   if (n === 0) return;
   const tick = scene.tickCount;
+  const slots = ORE_RAWS.length;
   for (let fi = 0; fi < n; fi++) {
     const f = scene.furnaces[fi];
-    // 1) Smelt progress (independent of proximity).
+    // Fuel + ore consumed up-front so breaking mid-smelt doesn't refund.
     if (f.smeltIdx < 0) {
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < slots; i++) {
         if (f.input[i] > 0 && f.fuel >= FUEL_PER_SMELT) {
           f.smeltIdx = i;
           f.smeltProgress = 0;
+          f.input[i]--;
+          f.fuel -= FUEL_PER_SMELT;
           break;
         }
       }
     }
-    if (f.smeltIdx >= 0) {
-      f.smeltProgress++;
-      if (f.smeltProgress >= SMELT_TIME_TICKS) {
-        f.input[f.smeltIdx]--;
-        f.fuel -= FUEL_PER_SMELT;
-        f.output[f.smeltIdx]++;
-        f.smeltIdx = -1;
-      }
+    if (f.smeltIdx >= 0 && ++f.smeltProgress >= SMELT_TIME_TICKS) {
+      f.output[f.smeltIdx]++;
+      f.smeltIdx = -1;
     }
 
-    // 2) Proximity transfer: push ingots first so finished work always
-    // comes back, then pull ore, then pull fuel.
     if (!nearFurnace(scene, f)) continue;
     if (tick % TRANSFER_INTERVAL_TICKS !== 0) continue;
     const inv = scene.inventory;
-    let dirty = false;
-    for (let i = 0; i < 2; i++) {
-      if (f.output[i] > 0) {
-        f.output[i]--; inv[i === 0 ? COPPER_INGOT : IRON_INGOT]++;
-        dirty = true; break;
-      }
+    let dirty = 0;
+    for (let i = 0; i < slots; i++) {
+      if (f.output[i] > 0) { f.output[i]--; inv[ORE_INGOTS[i]]++; dirty = 1; break; }
     }
-    let pulled = false;
-    for (let i = 0; i < 2; i++) {
-      const ore = i === 0 ? COPPER : IRON;
-      if (inv[ore] > 0) { inv[ore]--; f.input[i]++; pulled = true; break; }
+    let pulled = 0;
+    for (let i = 0; i < slots; i++) {
+      const ore = ORE_RAWS[i];
+      if (inv[ore] > 0) { inv[ore]--; f.input[i]++; pulled = 1; break; }
     }
-    if (!pulled && inv[WOOD] > 0 && f.fuel < FURNACE_MAX_FUEL) {
-      inv[WOOD]--; f.fuel++; pulled = true;
-    }
+    if (!pulled && inv[WOOD] > 0 && f.fuel < FURNACE_MAX_FUEL) { inv[WOOD]--; f.fuel++; pulled = 1; }
     if (dirty || pulled) scene.invDirty = true;
   }
 }
@@ -2755,8 +2703,7 @@ function tickMonster(scene, m, p) {
       m.x += m.vx; m.y += m.vy;
       m.vx *= 0.85; m.vy *= 0.85;
     } else {
-      if (flags & MF_GRAVITY) m.vy += GRAVITY;
-      moveMonsterWithCollision(scene, m);
+      moveBox(scene, m, isSolidForMonster, 0, flags & MF_GRAVITY);
     }
     return;
   }
@@ -2772,10 +2719,9 @@ function tickMonster(scene, m, p) {
     m.vx = (dx / dist) * sp;
     m.vy = (dy / dist) * sp;
     if (phases) { m.x += m.vx; m.y += m.vy; }
-    else        { moveMonsterWithCollision(scene, m); }
+    else        { moveBox(scene, m, isSolidForMonster, 0, 0); }
   } else {
     // ground
-    if (flags & MF_GRAVITY) m.vy += GRAVITY;
     const onGround = monsterOnGround(scene, m);
     const fuseBurning = (flags & MF_EXPLODES) && m.fuseTicks > 0;
 
@@ -2799,7 +2745,7 @@ function tickMonster(scene, m, p) {
       m.vx = 0;
     }
 
-    moveMonsterWithCollision(scene, m);
+    moveBox(scene, m, isSolidForMonster, 0, 1);
   }
 
   if (!phases) {
@@ -2885,23 +2831,31 @@ function monsterOnGround(scene, m) {
   return c;
 }
 
+// Jump trigger: wall ahead OR a 4-tile-deep pit ahead (so step-downs of
+// 1-3 tiles are walked, not jumped).
 function monsterBlockedAhead(scene, m) {
   const probeX = m.x + m.facing * (m.w / 2 + 1);
-  return collidesBox(scene, probeX, m.y - 1, 2, m.h - 2, isSolidForMonster);
+  if (collidesBox(scene, probeX, m.y - 1, 2, m.h - 2, isSolidForMonster)) return true;
+  return !collidesBox(scene, probeX, m.y + 4 * TILE, 2, 4 * TILE, isSolidForMonster);
 }
 
-function moveMonsterWithCollision(scene, m) {
-  if (m.vy > TERMINAL_VY) m.vy = TERMINAL_VY;
-  if (m.vy < -8) m.vy = -8;
-  m.x += m.vx;
-  if (collidesBox(scene, m.x, m.y, m.w, m.h, isSolidForMonster)) {
-    m.x -= m.vx; m.vx = 0;
+// Shared physics step: optional gravity + axis-resolved AABB collision.
+// `bounce` flips e.facing on a horizontal hit (villager wander) instead
+// of stopping (monster). `gravity` truthy = apply GRAVITY pre-move.
+function moveBox(scene, e, solidFn, bounce, gravity) {
+  if (gravity) e.vy = Math.min(TERMINAL_VY, e.vy + GRAVITY);
+  if (e.vy < -8) e.vy = -8;
+  e.x += e.vx;
+  if (collidesBox(scene, e.x, e.y, e.w, e.h, solidFn)) {
+    e.x -= e.vx;
+    if (bounce) e.facing = -e.facing;
+    e.vx = 0;
   }
-  m.y += m.vy;
-  if (collidesBox(scene, m.x, m.y, m.w, m.h, isSolidForMonster)) {
-    m.y -= m.vy;
-    if (m.vy > 0) m.y = Math.ceil(m.y / TILE) * TILE;
-    m.vy = 0;
+  e.y += e.vy;
+  if (collidesBox(scene, e.x, e.y, e.w, e.h, solidFn)) {
+    e.y -= e.vy;
+    if (e.vy > 0) e.y = Math.ceil(e.y / TILE) * TILE;
+    e.vy = 0;
   }
 }
 
@@ -2960,7 +2914,7 @@ function despawnAllMonsters(scene) {
 }
 
 // ----- Villagers: 9..80-cell rooms with ≥1 bed and ≥1 built wall.
-const VILLAGER_BODY_COLORS = [0x4060a0, 0xa04060, 0x60a040, 0x806020];
+const VILLAGER_BODY_COLORS = [0x4060a0, 0xa04060];
 
 // Returns array of [bedIdx, bedKind] pairs, one per bed in a valid room.
 function scanVillages(scene) {
@@ -3045,15 +2999,7 @@ function tickVillagers(scene) {
         v.dirTimer = 60 + (Math.random() * 120 | 0);
       }
       v.vx = v.facing * 0.4;
-      v.vy = Math.min(TERMINAL_VY, v.vy + GRAVITY);
-      v.x += v.vx;
-      if (collidesBox(scene, v.x, v.y, v.w, v.h, isSolidForPlayer)) { v.x -= v.vx; v.facing = -v.facing; v.vx = 0; }
-      v.y += v.vy;
-      if (collidesBox(scene, v.x, v.y, v.w, v.h, isSolidForPlayer)) {
-        v.y -= v.vy;
-        if (v.vy > 0) v.y = Math.ceil(v.y / TILE) * TILE;
-        v.vy = 0;
-      }
+      moveBox(scene, v, isSolidForPlayer, 1, 1);
     }
     const st = liquidStatus(scene, v);
     let dead = st.touchingLava || st.fullyInWater;
