@@ -12,7 +12,7 @@ const TILE = 10;
 const VW = GAME_WIDTH / TILE;   // 80 viewport tiles wide
 const VH = GAME_HEIGHT / TILE;  // 60 viewport tiles tall
 const WORLD_W = 256;
-const WORLD_H = 192;
+const WORLD_H = 512;
 
 // Fixed-timestep simulation. Movement constants (MOVE_SPEED, GRAVITY, …)
 // are calibrated PER TICK, not per frame, so the game runs at the same
@@ -50,13 +50,13 @@ const CAT_SANDLIKE = 2;
 const CAT_SOLID = 3;
 const CAT_MINERAL = 4;
 const CAT_MAGIC = 5;
-// Decor category: pass-through (isSolidCell returns false), never falls,
-// never mineable (hardness 0). Used for leaves, clouds, any ornament.
+// Decor category: pass-through, never falls, never mineable (hardness 0).
+// Used for leaves, clouds, any ornament.
 const CAT_DECOR = 6;
 
 // Type ids — keep stable so a saved world (future feature) doesn't drift.
 const AIR = 0, DIRT = 1, SAND = 2, WATER = 3, STONE = 4,
-      GRAVEL = 5, LAVA = 6, COPPER = 7, IRON = 8, BORDER = 9,
+      LAVA = 6, COPPER = 7, IRON = 8, BORDER = 9,
       WOOD = 10, COPPER_INGOT = 11, IRON_INGOT = 12,
       FURNACE = 13,
       LEAVES = 15, CLOUD = 16,
@@ -65,57 +65,70 @@ const AIR = 0, DIRT = 1, SAND = 2, WATER = 3, STONE = 4,
       BRICK_DIRT = 17, BRICK_STONE = 18, BRICK_COPPER = 19, BRICK_IRON = 20,
       DOOR_WOOD = 21, STAIR_WOOD = 22,
       BED_WOOD = 23, BED_IRON = 24,
-      OBSIDIAN = 25;
+      OBSIDIAN = 25,
+      HARD_ROCK = 26; // deep base layer, 2× stone hardness
 
-// Colors are packed little-endian 0xAABBGGRR for direct Uint32 writes
-// into the canvas ImageData buffer.
-//
-// Hardness and TIER_DAMAGE share a single damage-units scale:
-//   fist = 2, wood pick = 10, stone pick = 20, copper pick = 30.
-// So hardness=10 means "1 wood-pick hit"; hardness=4 means "0.4 wood-pick
-// hits" (fists break it in 2 hits). Everything lives in Uint8Array.
+// Per-block semantic flags. Drive procedural recipe generation and the
+// render-time texture pattern (brick edge / vein inset square). Adding a
+// new mineral = set F_IS_VEIN + F_FOR_TOOL/F_FOR_BUILD as appropriate.
+const F_FOR_TOOL = 1;
+const F_FOR_BUILD = 2;
+const F_IS_MINERAL = 4;   // requires smelting (vein → ingot)
+const F_RAW = 8;          // used as-is (no smelter step)
+const F_IS_BASE = 16;     // world default fill at this depth band
+const F_IS_VEIN = 32;     // generated as small pockets inside a base
+const F_IS_BRICK = 64;    // placed-building tile — render with outlined edge
+
+// Colors are packed little-endian 0xAABBGGRR for direct Uint32 writes.
+// Hardness/TIER_DAMAGE share a damage-units scale (fist=2, wood pick=10,
+// stone=20, copper=30, iron=50). All lookups live in Uint8/Uint16 arrays.
+// Each material with F_FOR_TOOL + tier auto-generates pickaxe + sword
+// recipes (10 of mat for tier 1, 100 for higher tiers). With F_FOR_BUILD
+// + brick, auto-generates BASE/WALL recipes (10 mat per tile). Adding
+// mithril = one row here + one BRICK_MITHRIL row + tier:5/brick set.
 const BLOCKS = [
-  // id, name, cat, color, fallTicks, hardness (damage units)
-  { id: AIR,    name: 'air',    cat: CAT_AIR,      color: 0xff0a0d18, fallTicks: 0,  hardness: 0  },
-  { id: DIRT,   name: 'dirt',   cat: CAT_SOLID,    color: 0xff2c4f7a, fallTicks: 15, hardness: 10 },
-  { id: SAND,   name: 'sand',   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 12, hardness: 10 },
-  { id: WATER,  name: 'water',  cat: CAT_LIQUID,   color: 0xffd88030, fallTicks: 5, hardness: 10 },
-  { id: STONE,  name: 'stone',  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 15, hardness: 20 },
-  { id: GRAVEL, name: 'gravel', cat: CAT_SANDLIKE, color: 0xff6e7e95, fallTicks: 12, hardness: 20 },
-  { id: LAVA,   name: 'lava',   cat: CAT_LIQUID,   color: 0xff1840f0, fallTicks: 30, hardness: 50 },
-  { id: COPPER, name: 'copper', cat: CAT_MINERAL,  color: 0xff2a8acc, fallTicks: 20, hardness: 40 },
-  { id: IRON,   name: 'iron',   cat: CAT_MINERAL,  color: 0xff8090a0, fallTicks: 20, hardness: 80 },
-  { id: BORDER, name: 'border', cat: CAT_MAGIC,    color: 0xff1a1a1a, fallTicks: 0,  hardness: 0  },
-  { id: WOOD,         name: 'wood',         cat: CAT_SOLID,   color: 0xff1d3a6e, fallTicks: 15, hardness: 4 },
-  // Inventory-only items (never appear in the world): ingots.
-  { id: COPPER_INGOT, name: 'copper ingot', cat: CAT_AIR,     color: 0xff2a8ad8, fallTicks: 0,  hardness: 0 },
-  { id: IRON_INGOT,   name: 'iron ingot',   cat: CAT_AIR,     color: 0xffc8d4de, fallTicks: 0,  hardness: 0 },
-  // Placeable structures (magic, unbreakable in v3).
-  { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC,   color: 0xff3a3a40, fallTicks: 0,  hardness: 200, dropType: STONE,        dropAmount: 40 },
-  // Decor — cosmetic only, pass-through, not mineable.
-  { id: LEAVES,       name: 'leaves',       cat: CAT_DECOR,   color: 0xff4aa040, fallTicks: 0,  hardness: 0 },
-  { id: CLOUD,        name: 'cloud',        cat: CAT_DECOR,   color: 0xffe8eef0, fallTicks: 0,  hardness: 0 },
-  // Placed-building tiles. CAT_MAGIC keeps them from falling and lets
-  // them anchor mineral chains, but they ARE mineable: each brick is 10
-  // raw units fused, so its hardness is `raw hardness × 10` (breaks take
-  // 10× what a single raw tile would). Drops return the original × 10.
-  { id: BRICK_DIRT,   name: 'dirt brick',   cat: CAT_MAGIC,   color: 0xff3a5880, fallTicks: 0,  hardness: 100, dropType: DIRT,         dropAmount: 10 },
-  { id: BRICK_STONE,  name: 'stone brick',  cat: CAT_MAGIC,   color: 0xff8a8a90, fallTicks: 0,  hardness: 200, dropType: STONE,        dropAmount: 10 },
-  { id: BRICK_COPPER, name: 'copper brick', cat: CAT_MAGIC,   color: 0xff3a8ad8, fallTicks: 0,  hardness: 400, dropType: COPPER_INGOT, dropAmount: 10 },
-  { id: BRICK_IRON,   name: 'iron brick',   cat: CAT_MAGIC,   color: 0xff708090, fallTicks: 0,  hardness: 600, dropType: IRON_INGOT,   dropAmount: 10 },
-  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC,   color: 0xff2a5088, fallTicks: 0,  hardness: 40,  dropType: WOOD,         dropAmount: 10 },
-  { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC,   color: 0xff3478b0, fallTicks: 0,  hardness: 40,  dropType: WOOD,         dropAmount: 10 },
-  { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC,   color: 0xff4050c0, fallTicks: 0,  hardness: 40,  dropType: WOOD,         dropAmount: 10 },
-  { id: BED_IRON,     name: 'iron bed',     cat: CAT_MAGIC,   color: 0xff606890, fallTicks: 0,  hardness: 600, dropType: IRON_INGOT,   dropAmount: 10 },
-  // Obsidian: forms when lava touches water. Very hard (copper pick+).
-  { id: OBSIDIAN,     name: 'obsidian',     cat: CAT_MAGIC,   color: 0xff40182a, fallTicks: 0,  hardness: 160 },
+  // id, name, cat, color, fallTicks, hardness, flags, [tier], [brick]
+  { id: AIR,    name: 'air',    cat: CAT_AIR,      color: 0xff0a0d18, fallTicks: 0,  hardness: 0,  flags: 0 },
+  { id: DIRT,   name: 'dirt',   cat: CAT_SOLID,    color: 0xff2c4f7a, fallTicks: 15, hardness: 10, flags: F_FOR_BUILD | F_RAW | F_IS_BASE, brick: BRICK_DIRT },
+  { id: SAND,   name: 'sand',   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 12, hardness: 10, flags: F_RAW },
+  { id: WATER,  name: 'water',  cat: CAT_LIQUID,   color: 0xffd88030, fallTicks: 5,  hardness: 10, flags: 0 },
+  { id: STONE,  name: 'stone',  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 15, hardness: 20, flags: F_FOR_TOOL | F_FOR_BUILD | F_RAW | F_IS_BASE, tier: 2, brick: BRICK_STONE },
+  { id: LAVA,   name: 'lava',   cat: CAT_LIQUID,   color: 0xff1840f0, fallTicks: 30, hardness: 50, flags: 0 },
+  { id: COPPER, name: 'copper', cat: CAT_MINERAL,  color: 0xff3070c0, fallTicks: 20, hardness: 40, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_MINERAL | F_IS_VEIN, tier: 3, brick: BRICK_COPPER },
+  { id: IRON,   name: 'iron',   cat: CAT_MINERAL,  color: 0xff8090a0, fallTicks: 20, hardness: 80, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_MINERAL | F_IS_VEIN, tier: 4, brick: BRICK_IRON },
+  { id: BORDER, name: 'border', cat: CAT_MAGIC,    color: 0xff1a1a1a, fallTicks: 0,  hardness: 0,  flags: 0 },
+  { id: WOOD,         name: 'wood',         cat: CAT_SOLID, color: 0xff1d3a6e, fallTicks: 15, hardness: 4,  flags: F_FOR_TOOL | F_RAW, tier: 1 },
+  { id: COPPER_INGOT, name: 'copper ingot', cat: CAT_AIR,   color: 0xff3a80d0, fallTicks: 0,  hardness: 0,  flags: 0 },
+  { id: IRON_INGOT,   name: 'iron ingot',   cat: CAT_AIR,   color: 0xffc8d4de, fallTicks: 0,  hardness: 0,  flags: 0 },
+  { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC, color: 0xff3a3a40, fallTicks: 0,  hardness: 200, flags: 0, drop: STONE, dropAmt: 40 },
+  { id: LEAVES,       name: 'leaves',       cat: CAT_DECOR, color: 0xff4aa040, fallTicks: 0,  hardness: 0,  flags: 0 },
+  { id: CLOUD,        name: 'cloud',        cat: CAT_DECOR, color: 0xffe8eef0, fallTicks: 0,  hardness: 0,  flags: 0 },
+  // Bricks: F_IS_BRICK drives outlined-edge texture. Hardness equals raw mat —
+  // a wall costs 10× to build but breaks like 1× of the raw block. Drop = 1.
+  { id: BRICK_DIRT,   name: 'dirt brick',   cat: CAT_MAGIC, color: 0xff3a5880, fallTicks: 0, hardness: 10, flags: F_IS_BRICK },
+  { id: BRICK_STONE,  name: 'stone brick',  cat: CAT_MAGIC, color: 0xff8a8a90, fallTicks: 0, hardness: 20, flags: F_IS_BRICK },
+  { id: BRICK_COPPER, name: 'copper brick', cat: CAT_MAGIC, color: 0xff4080c8, fallTicks: 0, hardness: 40, flags: F_IS_BRICK },
+  { id: BRICK_IRON,   name: 'iron brick',   cat: CAT_MAGIC, color: 0xff708090, fallTicks: 0, hardness: 80, flags: F_IS_BRICK },
+  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC, color: 0xff2a5088, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
+  { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC, color: 0xff3478b0, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
+  { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC, color: 0xff4050c0, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
+  { id: BED_IRON,     name: 'iron bed',     cat: CAT_MAGIC, color: 0xff606890, fallTicks: 0, hardness: 80, flags: 0, drop: IRON_INGOT, dropAmt: 1 },
+  { id: OBSIDIAN,     name: 'obsidian',     cat: CAT_MAGIC, color: 0xff40182a, fallTicks: 0, hardness: 160, flags: 0 },
+  // Hard rock: 2× stone hardness, the deep-world base layer below stone.
+  { id: HARD_ROCK,    name: 'hard rock',    cat: CAT_MINERAL, color: 0xff353038, fallTicks: 15, hardness: 40, flags: F_RAW | F_IS_BASE },
 ];
+
+// raw mat → smelted equivalent (used for brick drops + tool tier costs).
+const MAT_TO_INGOT = { [DIRT]: DIRT, [STONE]: STONE, [COPPER]: COPPER_INGOT, [IRON]: IRON_INGOT };
+// brick id → its raw material. Drops 10× of MAT_TO_INGOT[mat].
+const BRICK_MAT = { [BRICK_DIRT]: DIRT, [BRICK_STONE]: STONE, [BRICK_COPPER]: COPPER, [BRICK_IRON]: IRON };
 
 // Flat lookup tables for the hot path. 64-slot capacity (TYPE_MASK + 1).
 const BLOCK_CAT = new Uint8Array(64);
 const BLOCK_COLOR = new Uint32Array(64);
 const BLOCK_FALL_TICKS = new Uint8Array(64);
-const BLOCK_HARDNESS = new Uint16Array(64); // up to 600 (iron brick)
+const BLOCK_HARDNESS = new Uint16Array(64);
+const BLOCK_FLAGS = new Uint8Array(64);
 const BLOCK_DROP_TYPE = new Uint8Array(64);
 const BLOCK_DROP_AMOUNT = new Uint16Array(64);
 const BLOCK_NAME = new Array(64);
@@ -124,64 +137,52 @@ for (const b of BLOCKS) {
   BLOCK_COLOR[b.id] = b.color;
   BLOCK_FALL_TICKS[b.id] = b.fallTicks;
   BLOCK_HARDNESS[b.id] = b.hardness;
-  BLOCK_DROP_TYPE[b.id] = b.dropType != null ? b.dropType : b.id;
-  BLOCK_DROP_AMOUNT[b.id] = b.dropAmount != null ? b.dropAmount : 1;
+  BLOCK_FLAGS[b.id] = b.flags;
+  // bricks drop 1 of their raw mat's smelted form (you paid 10 to build, get 1 back)
+  if (b.flags & F_IS_BRICK) {
+    BLOCK_DROP_TYPE[b.id] = MAT_TO_INGOT[BRICK_MAT[b.id]];
+    BLOCK_DROP_AMOUNT[b.id] = 1;
+  } else {
+    BLOCK_DROP_TYPE[b.id] = b.drop != null ? b.drop : b.id;
+    BLOCK_DROP_AMOUNT[b.id] = b.dropAmt != null ? b.dropAmt : 1;
+  }
   BLOCK_NAME[b.id] = b.name;
 }
 
 // ----- Tools: tier-based damage shared between picks and swords. -----
-// Damage scale is × 10 so fist's 0.2 dmg keeps integer resolution. The
-// player auto-uses their pick during the day and their sword at night
-// (see getActiveTier). Pick and sword tiers are tracked separately so
-// you can craft both independently.
+// Day → pick, night → sword (auto via getActiveTier). Tool slots track
+// independently. Tier 0 = fists.
 const TIER_FIST = 0, TIER_WOOD = 1, TIER_STONE = 2, TIER_COPPER = 3, TIER_IRON = 4;
-const TIER_DAMAGE      = [2, 7, 15, 30, 50];
-const TIER_PICK_NAMES  = ['FISTS', 'WOODEN PICKAXE', 'STONE PICKAXE', 'COPPER PICKAXE', 'IRON PICKAXE'];
-const TIER_SWORD_NAMES = ['FISTS', 'WOODEN SWORD',   'STONE SWORD',   'COPPER SWORD',   'IRON SWORD'];
+const TIER_DAMAGE = [2, 7, 15, 30, 50];
+const TIER_NAMES = ['FISTS', 'WOODEN', 'STONE', 'COPPER', 'IRON'];
+const TIER_PICK_NAMES  = TIER_NAMES.map((n, i) => i === 0 ? 'FISTS' : n + ' PICKAXE');
+const TIER_SWORD_NAMES = TIER_NAMES.map((n, i) => i === 0 ? 'FISTS' : n + ' SWORD');
 
-// ----- Build recipes — split into two tabs in the menu. -----
-// Tools are one-shot per tier slot (locked once crafted OR once a higher
-// tier in the same slot is reached). Buildings can be crafted repeatedly.
-const TOOL_RECIPES = [
-  { name: 'WOODEN PICKAXE', cost: [[WOOD, 10]],          pickTier:  TIER_WOOD   },
-  { name: 'STONE PICKAXE',  cost: [[STONE, 100]],        pickTier:  TIER_STONE  },
-  { name: 'COPPER PICKAXE', cost: [[COPPER_INGOT, 100]], pickTier:  TIER_COPPER },
-  { name: 'IRON PICKAXE',   cost: [[IRON_INGOT, 100]],   pickTier:  TIER_IRON   },
-  { name: 'WOODEN SWORD',   cost: [[WOOD, 10]],          swordTier: TIER_WOOD   },
-  { name: 'STONE SWORD',    cost: [[STONE, 100]],        swordTier: TIER_STONE  },
-  { name: 'COPPER SWORD',   cost: [[COPPER_INGOT, 100]], swordTier: TIER_COPPER },
-  { name: 'IRON SWORD',     cost: [[IRON_INGOT, 100]],   swordTier: TIER_IRON   },
-];
-// v4 building recipes — selecting one enters placement mode with an
-// interactive preview. `kind` drives how PLACEMENT_DEFAULTS controls
-// resize/anchor; `material`+`tile` wire the cost/tile id.
-const BUILDING_RECIPES = [
-  { name: 'BASE DIRT',   kind: 'base',    material: DIRT,         tile: BRICK_DIRT,   costPerTile: 10 },
-  { name: 'BASE STONE',  kind: 'base',    material: STONE,        tile: BRICK_STONE,  costPerTile: 10 },
-  { name: 'BASE COPPER', kind: 'base',    material: COPPER_INGOT, tile: BRICK_COPPER, costPerTile: 10 },
-  { name: 'BASE IRON',   kind: 'base',    material: IRON_INGOT,   tile: BRICK_IRON,   costPerTile: 10 },
-  { name: 'WALL DIRT',   kind: 'wall',    material: DIRT,         tile: BRICK_DIRT,   costPerTile: 10 },
-  { name: 'WALL STONE',  kind: 'wall',    material: STONE,        tile: BRICK_STONE,  costPerTile: 10 },
-  { name: 'WALL COPPER', kind: 'wall',    material: COPPER_INGOT, tile: BRICK_COPPER, costPerTile: 10 },
-  { name: 'WALL IRON',   kind: 'wall',    material: IRON_INGOT,   tile: BRICK_IRON,   costPerTile: 10 },
-  { name: 'DOOR',        kind: 'door',    material: WOOD,         tile: DOOR_WOOD,    costTotal: 10 },
-  { name: 'STAIR',       kind: 'stair',   material: WOOD,         tile: STAIR_WOOD,   costPerTile: 10 },
-  { name: 'BED',         kind: 'bed',     material: WOOD,         tile: BED_WOOD,     costTotal: 10 },
-  { name: 'IRON BED',    kind: 'bed',     material: IRON_INGOT,   tile: BED_IRON,     costTotal: 10 },
-  { name: 'FURNACE',     kind: 'furnace', material: STONE,        tile: FURNACE,      costTotal: 50 },
-];
-
-// One-line help per building kind, shown in the build menu next to the
-// cost. Keep short — the row is ~40 monospace chars total after the
-// name + cost columns.
-const BUILD_DESC = {
-  base:    'floor (build on top)',
-  wall:    'blocks monsters',
-  door:    'only you can cross',
-  stair:   'climb between floors',
-  bed:     'sleep to skip night',
-  furnace: 'auto-smelts ingots',
-};
+// Tool + base/wall recipes are derived from BLOCKS.flags + .tier + .brick.
+// Tools cost 10 of mat for tier 1 (wood — easy to start) and 100 for the
+// rest. F_IS_MINERAL materials consume their smelted ingot.
+const TOOL_RECIPES = [];
+const BUILDING_RECIPES = [];
+for (const b of BLOCKS) {
+  const matId = MAT_TO_INGOT[b.id] || b.id;
+  const NAME = b.name.toUpperCase();
+  if ((b.flags & F_FOR_TOOL) && b.tier) {
+    const cost = [[matId, b.tier === 1 ? 10 : 100]];
+    TOOL_RECIPES.push({ name: TIER_PICK_NAMES[b.tier],  cost, pickTier:  b.tier });
+    TOOL_RECIPES.push({ name: TIER_SWORD_NAMES[b.tier], cost, swordTier: b.tier });
+  }
+  if ((b.flags & F_FOR_BUILD) && b.brick) {
+    BUILDING_RECIPES.push({ name: 'BASE ' + NAME, kind: 'base', material: matId, tile: b.brick, costPerTile: 10 });
+    BUILDING_RECIPES.push({ name: 'WALL ' + NAME, kind: 'wall', material: matId, tile: b.brick, costPerTile: 10 });
+  }
+}
+BUILDING_RECIPES.push(
+  { name: 'DOOR',    kind: 'door',    material: WOOD,       tile: DOOR_WOOD,  costTotal: 10 },
+  { name: 'STAIR',   kind: 'stair',   material: WOOD,       tile: STAIR_WOOD, costPerTile: 10 },
+  { name: 'BED',     kind: 'bed',     material: WOOD,       tile: BED_WOOD,   costTotal: 10 },
+  { name: 'IRON BED',kind: 'bed',     material: IRON_INGOT, tile: BED_IRON,   costTotal: 10 },
+  { name: 'FURNACE', kind: 'furnace', material: STONE,      tile: FURNACE,    costTotal: 50 },
+);
 
 // Per-kind defaults for the placement mode. `resize` says which axis
 // grows with U/D; null means fixed size.
@@ -237,8 +238,22 @@ const PLAYER_INVULN_TICKS = 30;     // grace period from monster contact
 // ----- Monsters -----
 const MON_SLIME = 0, MON_ZOMBIE = 1, MON_FLYER = 2,
       MON_GHOST = 3, MON_BOMBER = 4;
-const MONSTER_SPAWN_INTERVAL = 90;  // attempt a spawn every 1.5s
-const MONSTER_MAX = 10;
+const BASE_SPAWN_INTERVAL = 90;
+const BASE_MONSTER_MAX = 10;
+
+// Bitmask of allowed types per night (index = daysSurvived - 1, clamped
+// to the last entry). Bit i = type i. Adding a new monster = update
+// these masks. Stats scale separately (see monsterScale).
+const NIGHT_TYPES = new Uint8Array([
+  0b00010, // n1: zombie only
+  0b00110, // n2: + flyer
+  0b00111, // n3: + slime
+  0b00111, // n4
+  0b00111, // n5
+  0b01111, // n6: + ghost
+  0b01111, // n7
+  0b11111, // n8+: + bomber
+]);
 
 // Stuck escalation — if a monster tries to move but hasn't made
 // progress for STUCK_THRESHOLD_TICKS, it gets a bigger jump and is
@@ -246,76 +261,36 @@ const MONSTER_MAX = 10;
 const STUCK_THRESHOLD_TICKS = 30;
 const STUCK_JUMP_VELOCITY = -5.0; // peak ≈ 6.9 tiles, clears most walls
 
-// Per-type definitions. Adding a new monster = one row here + one case
-// in buildMonsterVisual + (if a new aiMode/behavior) one branch in
-// tickMonster. aiMode: 'ground' | 'glide' (future: 'teleport').
-//   jumpTrigger: 'timer' | 'blocked' | 'none'.
-//   walkSpeed / airSpeed: horizontal velocity on ground / airborne.
-//   receivesKnockback: set false for ghost-like foes that should ignore
-//     sword impact velocity.
-//   canAttackTiles + attackDamage: chip rate against structures.
-const MONSTER_DEFS = {
-  [MON_SLIME]: {
-    w: 12, h: 8, hp: 25,
-    aiMode: 'ground',
-    walkSpeed: 0, airSpeed: 1.2,     // sits on ground, arcs in the air
-    jumpVelocity: -3.5,
-    jumpTrigger: 'timer',
-    jumpTimerMin: 30, jumpTimerMax: 60,
-    hasGravity: true, ignoresCollision: false,
-    canAttackTiles: true, attackDamage: 3,
-    contactDamage: 1,
-    receivesKnockback: true,
-  },
-  [MON_ZOMBIE]: {
-    w: 12, h: 22, hp: 45,
-    aiMode: 'ground',
-    walkSpeed: 0.6, airSpeed: 0.6,   // pushes toward player every tick
-    jumpVelocity: -4.2,
-    jumpTrigger: 'blocked',
-    hasGravity: true, ignoresCollision: false,
-    canAttackTiles: true, attackDamage: 5,
-    contactDamage: 2,
-    receivesKnockback: true,
-  },
-  [MON_FLYER]: {
-    // Now collides with blocks (used to phase through). Frees the
-    // "ignores walls" niche for the ghost.
-    w: 14, h: 8, hp: 25,
-    aiMode: 'glide',
-    glideSpeed: 0.8,
-    hasGravity: false, ignoresCollision: false,
-    canAttackTiles: true, attackDamage: 3,
-    contactDamage: 1,
-    receivesKnockback: true,
-  },
-  [MON_GHOST]: {
-    // Etereal: phases through walls, immune to knockback.
-    w: 12, h: 14, hp: 22,
-    aiMode: 'glide',
-    glideSpeed: 0.55,
-    hasGravity: false, ignoresCollision: true,
-    canAttackTiles: false,
-    contactDamage: 2,
-    receivesKnockback: false,
-  },
-  [MON_BOMBER]: {
-    // Creeper-style: walks up to the player, fuses, explodes.
-    w: 12, h: 14, hp: 35,
-    aiMode: 'ground',
-    walkSpeed: 0.4, airSpeed: 0.4,
-    jumpVelocity: -4.0, jumpTrigger: 'blocked',
-    hasGravity: true, ignoresCollision: false,
-    canAttackTiles: false,       // does not chip structures — explodes
-    contactDamage: 0,            // damage is the blast, not the touch
-    receivesKnockback: true,
-    explodesOnProximity: true,
-    explosionRange: 2.2 * TILE,  // distance (px) at which fuse starts
-    explosionRadius: 3,          // destruction radius in tiles
-    explosionDamage: 5,          // HP dealt to player if in radius
-    fuseTicks: 45,               // 0.75 s of flashing before boom
-  },
-};
+// Per-type stats stored as parallel typed arrays. Adding a monster =
+// one row in each table + one case in buildMonsterVisual. AI: 0=ground,
+// 1=glide. jumpTrigger: 0=none, 1=timer, 2=blocked. Flags: bitmask of
+// MF_GRAVITY|MF_PHASE|MF_KNOCK|MF_ATK_TILES|MF_EXPLODES.
+const MF_GRAVITY = 1, MF_PHASE = 2, MF_KNOCK = 4, MF_ATK_TILES = 8, MF_EXPLODES = 16;
+//                                       SLIME ZOMBIE FLYER GHOST BOMBER
+const M_W        = new Uint8Array([        12,   12,   14,   12,   12]);
+const M_H        = new Uint8Array([         8,   22,    8,   14,   14]);
+const M_HP       = new Uint8Array([        25,   45,   25,   22,   35]);
+const M_AI       = new Uint8Array([         0,    0,    1,    1,    0]);
+const M_FLAGS    = new Uint8Array([
+  MF_GRAVITY|MF_KNOCK|MF_ATK_TILES,
+  MF_GRAVITY|MF_KNOCK|MF_ATK_TILES,
+  MF_KNOCK|MF_ATK_TILES,
+  MF_PHASE,
+  MF_GRAVITY|MF_KNOCK|MF_EXPLODES,
+]);
+const M_WALK     = [0,    0.6,  0,    0,    0.4];
+const M_AIR      = [1.2,  0.6,  0,    0,    0.4];
+const M_GLIDE    = [0,    0,    0.8,  0.55, 0];
+const M_JUMP_V   = [-3.5, -4.2, 0,    0,    -4.0];
+const M_JUMP_TR  = new Uint8Array([1, 2, 0, 0, 2]);
+const M_JUMP_MIN = new Uint8Array([30, 0, 0, 0, 0]);
+const M_JUMP_MAX = new Uint8Array([60, 0, 0, 0, 0]);
+const M_ATK_DMG  = new Uint8Array([3, 5, 3, 0, 0]);
+const M_CONTACT  = new Uint8Array([1, 2, 1, 2, 0]);
+const M_FUSE     = new Uint8Array([0, 0, 0, 0, 45]);
+const M_EXP_RAD  = new Uint8Array([0, 0, 0, 0, 3]);
+const M_EXP_DMG  = new Uint8Array([0, 0, 0, 0, 5]);
+const M_EXP_RNG  = 2.2 * TILE; // bomber-only constant
 
 const GRASS_COLOR = 0xff2c8845; // visual-only: dirt with air above
 
@@ -426,16 +401,16 @@ function create() {
   scene.cam = { x: 0, y: 0 };
   updateCamera(scene);
 
-  // World texture: VW+2 × VH+2 pixels (1 tile margin each side) so we can
-  // scroll smoothly per pixel by offsetting the image. Avoids the 1-tile
-  // visual misalignment between the tile grid and the player's smooth pos.
-  const TW = VW + 2;
-  const TH = VH + 2;
+  // World texture: real-pixel resolution. Each tile occupies TILE×TILE
+  // sub-pixels so render() can draw outlined bricks and inset mineral
+  // squares. 1 tile margin each side enables sub-tile camera offsets.
+  const TW = (VW + 2) * TILE;
+  const TH = (VH + 2) * TILE;
   scene.tex = scene.textures.createCanvas('world', TW, TH);
   scene.texCtx = scene.tex.getContext();
   scene.imgData = scene.texCtx.getImageData(0, 0, TW, TH);
   scene.pixels = new Uint32Array(scene.imgData.data.buffer);
-  scene.worldImg = scene.add.image(0, 0, 'world').setOrigin(0).setScale(TILE);
+  scene.worldImg = scene.add.image(0, 0, 'world').setOrigin(0).setScale(1);
 
   buildPlayerVisual(scene);
 
@@ -478,7 +453,11 @@ function create() {
 
   // Monsters (only present during night).
   scene.monsters = [];
-  scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
+  scene.monsterSpawnTimer = BASE_SPAWN_INTERVAL;
+
+  // Villagers — populated by scanVillages at every dawn.
+  scene.villagers = [];
+  scene.villagerCount = 0;
 
   buildHud(scene);
 
@@ -505,25 +484,22 @@ function generateWorld(w) {
     return seed / 4294967296;
   };
 
-  const surfaceBase = 60;
   for (let y = 0; y < WORLD_H; y++) {
     for (let x = 0; x < WORLD_W; x++) {
       const idx = y * WORLD_W + x;
-      // World borders + bottom = BORDER (magic, unbreakable).
       if (x === 0 || x === WORLD_W - 1 || y === WORLD_H - 1) {
         w[idx] = BORDER;
         continue;
       }
       const wave = Math.sin(x * 0.06) * 3 + Math.sin(x * 0.21) * 2;
-      const surfaceY = (surfaceBase + wave) | 0;
-      if (y < surfaceY)             w[idx] = AIR;
-      else if (y < surfaceY + 8)    w[idx] = DIRT;
-      else if (y < WORLD_H - 22)    w[idx] = STONE;
-      else                          w[idx] = STONE; // bedrock band, also stone
+      const surfaceY = (60 + wave) | 0;
+      if (y < surfaceY)          w[idx] = AIR;
+      else if (y < surfaceY + 8) w[idx] = DIRT;
+      else if (y < 160)          w[idx] = STONE;
+      else                       w[idx] = HARD_ROCK;
     }
   }
 
-  // Pockets — use blob() to carve regions of `only` into `fill`.
   const pocket = (count, fill, only, yLo, yHi, rxMax, ryMax) => {
     for (let i = 0; i < count; i++) {
       const cx = 4 + ((rnd() * (WORLD_W - 8)) | 0);
@@ -534,14 +510,22 @@ function generateWorld(w) {
     }
   };
 
-  pocket(45,  SAND,   STONE, 70,  150, 11, 7); // big sand deposits
-  pocket(80,  GRAVEL, STONE, 80,  160, 3,  2);
-  pocket(35,  WATER,  STONE, 70,  140, 9,  6); // big water reservoirs
-  pocket(40,  LAVA,   STONE, 140, 168, 3,  2);
-  pocket(60,  COPPER, STONE, 90,  165, 2,  2);
-  pocket(35,  IRON,   STONE, 120, 165, 2,  2);
-  pocket(50,  AIR,    STONE, 75,  165, 4,  2);
-  pocket(25,  AIR,    DIRT,  60,  72,  3,  1); // little caverns near surface
+  // [count, fill, baseTarget, yLo, yHi, rxMax, ryMax]
+  const VEINS = [
+    [50,  SAND,   STONE,     70,  155, 11, 7],
+    [40,  WATER,  STONE,     70,  155, 9,  6],
+    [25,  LAVA,   STONE,     140, 160, 3,  2],
+    [80,  COPPER, STONE,     90,  158, 2,  2],
+    [55,  IRON,   STONE,     120, 158, 2,  2],
+    [90,  AIR,    STONE,     75,  160, 4,  2],
+    [25,  AIR,    DIRT,      60,  72,  3,  1],
+    [110, LAVA,   HARD_ROCK, 165, 505, 4,  3],
+    [50,  WATER,  HARD_ROCK, 165, 400, 6,  4],
+    [90,  COPPER, HARD_ROCK, 165, 400, 2,  2],
+    [130, IRON,   HARD_ROCK, 200, 505, 2,  2],
+    [140, AIR,    HARD_ROCK, 165, 505, 5,  3],
+  ];
+  for (const v of VEINS) pocket(v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
 
   placeClouds(w, rnd);
   placeTrees(w, rnd);
@@ -667,6 +651,7 @@ function update(_time, delta) {
   render(scene);
   updatePlayerVisual(scene);
   renderMonsters(scene);
+  renderVillagers(scene);
   renderFurnaces(scene);
   if (scene.placement.active) {
     scene.placementPreview.setPosition(-scene.cam.x, -scene.cam.y);
@@ -678,6 +663,7 @@ function update(_time, delta) {
   refreshDayTimer(scene);
   refreshHpHud(scene);
   scene.toolText.setText('TOOL: ' + getActiveToolName(scene));
+  scene.villagerText.setText('VILLAGERS: ' + scene.villagerCount);
 
   if (DEBUG_HUD) {
     scene.hud.setText(
@@ -710,6 +696,7 @@ function runTick(scene) {
     tickMonsters(scene);
     checkMonsterDamage(scene);
   }
+  tickVillagers(scene);
 
   simulateViewport(scene);
   if (scene.dirtyMineral) {
@@ -739,6 +726,7 @@ function endNight(scene) {
   scene.player.hp = scene.player.maxHp;
   despawnAllMonsters(scene);
   regrowTrees(scene, 4); // compensate for whatever monsters chewed
+  syncVillagers(scene, scanVillages(scene));
   showToast(scene, 'DAY BREAKS!');
 }
 
@@ -1123,7 +1111,7 @@ function handleInput(scene) {
   // Jump — joystick UP only (P1_U / W). Ground-jump OR swim-stroke: when
   // in any liquid you can kick upward repeatedly to simulate swimming.
   if (c.pressed.P1_U) {
-    if (scene.player.onGround || playerLiquidStatus(scene).inAnyLiquid) {
+    if (scene.player.onGround || liquidStatus(scene, scene.player).inAnyLiquid) {
       scene.player.vy = JUMP_VELOCITY;
       scene.player.onGround = false;
     }
@@ -1316,15 +1304,13 @@ function movePlayer(scene) {
 
   for (let s = 0; s < steps; s++) {
     p.x += sx;
-    if (collidesPlayer(scene, p)) { p.x -= sx; p.vx = 0; }
+    if (collidesBox(scene, p.x, p.y, p.w, p.h)) { p.x -= sx; p.vx = 0; }
     p.y += sy;
-    if (collidesPlayer(scene, p)) {
+    if (collidesBox(scene, p.x, p.y, p.w, p.h)) {
       p.y -= sy;
       if (sy > 0) {
         p.onGround = true;
-        // Snap to tile boundary so AABB never carries a sub-tile fraction
-        // (otherwise it can occupy a 4th row and refuse to fit through
-        // side-mined channels).
+        // Snap to tile boundary so AABB never carries a sub-tile fraction.
         p.y = Math.ceil(p.y / TILE) * TILE;
       }
       p.vy = 0;
@@ -1335,13 +1321,13 @@ function movePlayer(scene) {
 
   // Cave-in protection: if a tile spawned on top of player, shove up.
   let safety = 0;
-  while (collidesPlayer(scene, p) && safety < 24) {
+  while (collidesBox(scene, p.x, p.y, p.w, p.h) && safety < 24) {
     p.y -= 1; p.vy = 0; safety++;
   }
 
   // Refresh ground status by probing 1 px below.
   p.y += 1;
-  p.onGround = collidesPlayer(scene, p);
+  p.onGround = collidesBox(scene, p.x, p.y, p.w, p.h);
   p.y -= 1;
 
   // Fall-damage tracking: peakY is the minimum y (highest point) since the
@@ -1353,7 +1339,7 @@ function movePlayer(scene) {
   } else if (!wasOnGround) {
     const fallPx = p.y - p.peakY;
     if (fallPx > FALL_DAMAGE_PX) {
-      const st = playerLiquidStatus(scene);
+      const st = liquidStatus(scene, scene.player);
       if (!st.touchingWater) {
         const dmg = (fallPx / FALL_DAMAGE_PX) | 0;
         applyPlayerDamage(scene, dmg);
@@ -1361,23 +1347,6 @@ function movePlayer(scene) {
     }
     p.peakY = p.y;
   }
-}
-
-function collidesPlayer(scene, p) {
-  const w = scene.world;
-  const halfW = p.w / 2;
-  const x0 = ((p.x - halfW) / TILE) | 0;
-  const x1 = ((p.x + halfW - 0.001) / TILE) | 0;
-  const y0 = ((p.y - p.h) / TILE) | 0;
-  const y1 = ((p.y - 0.001) / TILE) | 0;
-  for (let y = y0; y <= y1; y++) {
-    if (y < 0 || y >= WORLD_H) return true;
-    for (let x = x0; x <= x1; x++) {
-      if (x < 0 || x >= WORLD_W) return true;
-      if (isSolidCell(w[y * WORLD_W + x])) return true;
-    }
-  }
-  return false;
 }
 
 // Player passes through doors + stairs + beds (beds + stairs feel like
@@ -1398,9 +1367,6 @@ function isSolidForMonster(cell) {
   const cat = BLOCK_CAT[t];
   return cat !== CAT_AIR && cat !== CAT_LIQUID && cat !== CAT_DECOR;
 }
-
-// Back-compat alias for existing call sites (player-space collision).
-const isSolidCell = isSolidForPlayer;
 
 // Returns the bed type (BED_WOOD / BED_IRON) overlapping the player, or 0.
 function playerOverlapsBed(scene) {
@@ -1487,15 +1453,15 @@ function playerLiquidFallTicks(scene) {
   return maxFall;
 }
 
-// Richer status used by hazard logic + swim-jump + fall-damage cancel.
-function playerLiquidStatus(scene) {
+// Richer liquid status: works for any entity with {x, y, w, h}.
+// Used by hazards (player + villagers), swim-jump, fall-damage cancel.
+function liquidStatus(scene, e) {
   const w = scene.world;
-  const p = scene.player;
-  const halfW = p.w / 2;
-  const x0 = ((p.x - halfW) / TILE) | 0;
-  const x1 = ((p.x + halfW - 0.001) / TILE) | 0;
-  const y0 = ((p.y - p.h) / TILE) | 0;
-  const y1 = ((p.y - 0.001) / TILE) | 0;
+  const halfW = e.w / 2;
+  const x0 = ((e.x - halfW) / TILE) | 0;
+  const x1 = ((e.x + halfW - 0.001) / TILE) | 0;
+  const y0 = ((e.y - e.h) / TILE) | 0;
+  const y1 = ((e.y - 0.001) / TILE) | 0;
   let waterCells = 0, lavaCells = 0, totalCells = 0;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
@@ -1517,7 +1483,7 @@ function playerLiquidStatus(scene) {
 function updatePlayerHazards(scene) {
   if (scene.gameOver) return;
   const p = scene.player;
-  const st = playerLiquidStatus(scene);
+  const st = liquidStatus(scene, scene.player);
 
   if (st.fullyInWater) {
     p.submergedTicks++;
@@ -1587,227 +1553,179 @@ function clamp(v, a, b) {
 // 10. Rendering — world texture + per-tile damage tint
 // ============================================================
 
+// Multiply each RGB channel of a packed 0xAABBGGRR color by `f`. Clamps
+// to [0,255] so it serves both darken (f<1) and lighten (f>1).
+function tintColor(c, f) {
+  let b = (((c >>> 16) & 0xff) * f) | 0; if (b > 255) b = 255;
+  let g = (((c >>> 8) & 0xff) * f) | 0;  if (g > 255) g = 255;
+  let r = ((c & 0xff) * f) | 0;          if (r > 255) r = 255;
+  return (c & 0xff000000) | (b << 16) | (g << 8) | r;
+}
+
 function render(scene) {
-  // Paint the sky by overriding AIR's color each frame. The day/night cycle
-  // blends amber sunrise → sky blue → sunset orange; the night overlay on
-  // top darkens everything further when `nightActive`.
+  // Sky color drives AIR each frame.
   BLOCK_COLOR[AIR] = getSkyColor(scene);
 
   const w = scene.world;
   const damage = scene.damage;
   const px = scene.pixels;
+  const SUB = TILE;
   const TW = VW + 2;
   const TH = VH + 2;
+  const PXW = TW * SUB;
   const camTx = ((scene.cam.x / TILE) | 0) - 1;
   const camTy = ((scene.cam.y / TILE) | 0) - 1;
+  const sky = BLOCK_COLOR[AIR];
 
   for (let vy = 0; vy < TH; vy++) {
     const wy = camTy + vy;
-    const baseV = vy * TW;
-    if (wy < 0 || wy >= WORLD_H) {
-      for (let vx = 0; vx < TW; vx++) px[baseV + vx] = BLOCK_COLOR[AIR];
-      continue;
-    }
+    const outOfRangeY = wy < 0 || wy >= WORLD_H;
     const rowW = wy * WORLD_W;
     for (let vx = 0; vx < TW; vx++) {
       const wx = camTx + vx;
-      if (wx < 0 || wx >= WORLD_W) {
-        px[baseV + vx] = BLOCK_COLOR[AIR];
-        continue;
+      let baseColor, pattern = 0;
+      if (outOfRangeY || wx < 0 || wx >= WORLD_W) {
+        baseColor = sky;
+      } else {
+        const idx = rowW + wx;
+        const t = w[idx] & TYPE_MASK;
+        const flags = BLOCK_FLAGS[t];
+        baseColor = BLOCK_COLOR[t];
+        if (t === DIRT && wy > 0 && (w[idx - WORLD_W] & TYPE_MASK) === AIR) {
+          baseColor = GRASS_COLOR;
+        }
+        const dmg = damage[idx];
+        if (dmg > 0) {
+          const hard = BLOCK_HARDNESS[t];
+          if (hard > 0) {
+            let factor = 1 - 0.45 * dmg / hard;
+            if (factor < 0) factor = 0;
+            baseColor = tintColor(baseColor, factor);
+          }
+        }
+        if (flags & F_IS_BRICK) pattern = 1;
+        else if (flags & F_IS_VEIN) pattern = 2;
       }
-      const idx = rowW + wx;
-      const t = w[idx] & TYPE_MASK;
-      let color = BLOCK_COLOR[t];
 
-      // Grass tint: surface dirt (dirt with air directly above).
-      if (t === DIRT && wy > 0 && (w[idx - WORLD_W] & TYPE_MASK) === AIR) {
-        color = GRASS_COLOR;
-      }
-
-      // Damage tint: darken proportional to damage / hardness (both in
-      // damage units).
-      const dmg = damage[idx];
-      if (dmg > 0) {
-        const hard = BLOCK_HARDNESS[t];
-        if (hard > 0) {
-          let factor = 1 - 0.45 * dmg / hard;
-          if (factor < 0) factor = 0;
-          const b = (((color >>> 16) & 0xff) * factor) | 0;
-          const g = (((color >>> 8) & 0xff) * factor) | 0;
-          const r = ((color & 0xff) * factor) | 0;
-          color = (color & 0xff000000) | (b << 16) | (g << 8) | r;
+      // Write SUB×SUB pixels for this tile.
+      const startPx = (vy * SUB) * PXW + vx * SUB;
+      if (pattern === 0) {
+        for (let py = 0; py < SUB; py++) {
+          const off = startPx + py * PXW;
+          for (let dx = 0; dx < SUB; dx++) px[off + dx] = baseColor;
+        }
+      } else if (pattern === 1) {
+        const edge = tintColor(baseColor, 0.6);
+        for (let py = 0; py < SUB; py++) {
+          const off = startPx + py * PXW;
+          const edgeRow = py === 0 || py === SUB - 1;
+          for (let dx = 0; dx < SUB; dx++) {
+            px[off + dx] = (edgeRow || dx === 0 || dx === SUB - 1) ? edge : baseColor;
+          }
+        }
+      } else {
+        // Vein: full tile in mineral color + brighter 4×4 inset spot.
+        const spot = tintColor(baseColor, 1.6);
+        for (let py = 0; py < SUB; py++) {
+          const off = startPx + py * PXW;
+          for (let dx = 0; dx < SUB; dx++) px[off + dx] = baseColor;
+        }
+        for (let py = 3; py < 7; py++) {
+          const off = startPx + py * PXW;
+          for (let dx = 3; dx < 7; dx++) px[off + dx] = spot;
         }
       }
-
-      px[baseV + vx] = color;
     }
   }
 
   scene.texCtx.putImageData(scene.imgData, 0, 0);
   scene.tex.refresh();
-
-  // Sub-tile camera offset so the tile grid lines up with the player's
-  // continuous position.
   scene.worldImg.setPosition(
     camTx * TILE - scene.cam.x,
     camTy * TILE - scene.cam.y,
   );
 }
 
-// ----- Player visual (container of sub-rectangles, animated procedurally)
+// ----- Human visual (shared by player and villagers): legs, body, head, eye.
 
-// Base Y positions for upper-body parts. Lifted out of updatePlayerVisual
-// so the hot path doesn't allocate a fresh object each frame.
-const PLAYER_BASE_Y = {
-  body: -13, belt: -8, beltBuckle: -8,
-  head: -20, hair: -28,
-  eye: -22,
-  mustache: -17,
-  beardMid: -14, beardShadow: -12,
-  beardLow: -10, beardTip: -7,
-};
+function buildHumanVisual(scene, depth, bodyColor) {
+  const c = scene.add.container(0, 0).setDepth(depth);
+  const parts = {};
+  parts.legs = scene.add.rectangle(0, -3, 10, 6, 0x2a3148);
+  parts.body = scene.add.rectangle(0, -13, 14, 12, bodyColor);
+  parts.head = scene.add.rectangle(0, -20, 12, 10, 0xe4b593);
+  parts.eye  = scene.add.rectangle(2, -20, 3, 3, 0x101018);
+  for (const k in parts) c.add(parts[k]);
+  return { c, parts };
+}
 
 function buildPlayerVisual(scene) {
-  const c = scene.add.container(0, 0).setDepth(10);
-  const parts = {};
-  // Plain flat layers (no outlines). Beard tones lean grey rather than
-  // pure white so the dwarf reads as older/silver-bearded.
-  const pants = 0x2a3148, shirt = 0xc23a2a, belt = 0x5a3015,
-        buckle = 0xe6c046,
-        skin = 0xe4b593,
-        hair = 0xc8c8c8, beard = 0xc8c8c8, beardShadow = 0x9a9a9a,
-        eye = 0x101018,
-        pickHandleColor = 0x6b4226, pickHeadColor = 0xb0b0b0;
-
-  parts.legL         = scene.add.rectangle(-4, -3, 5, 6, pants);
-  parts.legR         = scene.add.rectangle( 4, -3, 5, 6, pants);
-  parts.body         = scene.add.rectangle( 0, -13, 14, 12, shirt);
-  parts.belt         = scene.add.rectangle( 0, -8, 14, 2, belt);
-  parts.beltBuckle   = scene.add.rectangle( 0, -8, 2,  2, buckle);
-  parts.head         = scene.add.rectangle( 0, -20, 14, 14, skin);
-  // Hair raised; bigger, taller cap on top of the head.
-  parts.hair         = scene.add.rectangle( 0, -28, 12, 4, hair);
-  // Single big eye; no pupil/nose details — face is too small for that.
-  parts.eye          = scene.add.rectangle( 1, -22, 4, 4, eye);
-  parts.mustache     = scene.add.rectangle( 0, -17, 12, 2, beard);
-  parts.beardMid     = scene.add.rectangle( 0, -14, 14, 4, beard);
-  parts.beardShadow  = scene.add.rectangle( 0, -12, 12, 1, beardShadow);
-  // Lower beard sweeps strongly toward facing — looks "blown" that way.
-  parts.beardLow     = scene.add.rectangle( 2, -10, 10, 3, beard);
-  parts.beardTip     = scene.add.rectangle( 6, -7, 7, 2, beard);
-
-  parts.pickHandle   = scene.add
-    .rectangle(0, -14, 12, 2, pickHandleColor)
-    .setOrigin(0, 0.5);
-  parts.pickHead     = scene.add.rectangle(12, -14, 4, 5, pickHeadColor);
+  const { c, parts } = buildHumanVisual(scene, 10, 0xc23a2a);
+  parts.pickHandle = scene.add.rectangle(0, -14, 12, 2, 0x6b4226).setOrigin(0, 0.5);
+  parts.pickHead   = scene.add.rectangle(12, -14, 4, 5, 0xb0b0b0);
   parts.pickHandle.visible = false;
   parts.pickHead.visible = false;
-
-  for (const k in parts) c.add(parts[k]);
+  c.add(parts.pickHandle);
+  c.add(parts.pickHead);
   scene.playerContainer = c;
   scene.playerParts = parts;
 }
+
+// Mine swing pose table indexed by (mineDy + 1) → [hx, hy, angleStart, angleSweep].
+const SWING_POSES = [
+  [3, -19,  30, -110],
+  [5, -14, -60,  120],
+  [3, -10, -30,  110],
+];
 
 function updatePlayerVisual(scene) {
   const p = scene.player;
   const parts = scene.playerParts;
   const c = scene.playerContainer;
   c.setPosition(p.x - scene.cam.x, p.y - scene.cam.y);
-
-  // Damage flash: blink the player container while flashTicks ticks down.
   c.setAlpha(p.flashTicks > 0 && (p.flashTicks & 4) ? 0.25 : 1);
 
-  let state;
-  if (scene.mineAnim > 0)                           state = 'mine';
-  else if (!p.onGround && p.vy < -0.1)              state = 'jump';
-  else if (!p.onGround && p.vy > 0.1)               state = 'fall';
-  else if (Math.abs(p.vx) > 0.05)                   state = 'walk';
-  else                                              state = 'idle';
-
   const flip = scene.facing < 0 ? -1 : 1;
-
-  // Reset legs (lower body lives at fixed y regardless of animation pose).
-  parts.legL.x = -4; parts.legL.y = -3; parts.legL.scaleY = 1;
-  parts.legR.x = 4;  parts.legR.y = -3; parts.legR.scaleY = 1;
-  parts.body.scaleY = 1;
-
-  // Big single eye drifts toward facing. Beard sweeps strongly the way
-  // the dwarf is looking.
-  parts.eye.x        = flip * 3;
-  parts.mustache.x   = flip * 2;
-  parts.beardMid.x   = flip * 2;
-  parts.beardLow.x   = flip * 3;
-  parts.beardTip.x   = flip * 7;
-  parts.beltBuckle.x = flip * 4;
+  parts.eye.x = flip * 3;
 
   let bob = 0;
-
-  if (state === 'walk') {
+  parts.legs.scaleY = 1;
+  parts.body.scaleY = 1;
+  if (Math.abs(p.vx) > 0.05 && p.onGround) {
     scene.walkPhase += 0.32;
     const s = Math.sin(scene.walkPhase);
-    parts.legL.scaleY = 1 - Math.max(0, s) * 0.3;
-    parts.legR.scaleY = 1 - Math.max(0, -s) * 0.3;
+    parts.legs.scaleY = 1 - Math.abs(s) * 0.25;
     bob = -Math.abs(s) * 0.7;
-  } else if (state === 'jump') {
-    parts.body.scaleY = 1.08;
-    parts.legL.x = -2; parts.legR.x = 2;
-    parts.legL.y = -1; parts.legR.y = -1;
-    parts.legL.scaleY = 0.7; parts.legR.scaleY = 0.7;
-    bob = -1;
-  } else if (state === 'fall') {
-    parts.legL.x = -5; parts.legR.x = 5;
-    parts.body.scaleY = 0.95;
-    bob = 1;
+  } else if (!p.onGround && p.vy < -0.1) {
+    parts.body.scaleY = 1.08; bob = -1;
+  } else if (!p.onGround && p.vy > 0.1) {
+    parts.body.scaleY = 0.95; bob = 1;
   }
+  parts.body.y = -13 + bob;
+  parts.head.y = -20 + bob;
+  parts.eye.y  = -20 + bob;
 
-  // Apply a single bob offset to every upper-body part so the head, face
-  // and beard move as a unit. PLAYER_BASE_Y is the per-part idle Y.
-  for (const k in PLAYER_BASE_Y) parts[k].y = PLAYER_BASE_Y[k] + bob;
-
-  // Pickaxe (day) / sword (night) swing. Same rig, different colors.
-  if (state === 'mine') {
+  if (scene.mineAnim > 0) {
     const t = (14 - scene.mineAnim) / 14;
     const swing = Math.sin(t * Math.PI);
     parts.pickHandle.visible = true;
     parts.pickHead.visible = true;
     if (scene.nightActive) {
-      // Sword: grey grip, silver blade.
       parts.pickHandle.fillColor = 0x707070;
       parts.pickHead.fillColor   = 0xe0e8f0;
     } else {
-      // Pickaxe: wooden handle, grey head.
       parts.pickHandle.fillColor = 0x6b4226;
       parts.pickHead.fillColor   = 0xb0b0b0;
     }
-
-    if (scene.mineDy === 0) {
-      parts.pickHandle.x = flip * 5;
-      parts.pickHandle.y = -14;
-      parts.pickHandle.scaleX = flip;
-      const a = -60 + swing * 120;
-      parts.pickHandle.angle = a;
-      const rad = a * Math.PI / 180;
-      parts.pickHead.x = flip * (5 + Math.cos(rad) * 12);
-      parts.pickHead.y = -14 + Math.sin(rad) * 12;
-    } else if (scene.mineDy > 0) {
-      parts.pickHandle.x = flip * 3;
-      parts.pickHandle.y = -10;
-      parts.pickHandle.scaleX = flip;
-      const a = -30 + swing * 110;
-      parts.pickHandle.angle = a;
-      const rad = a * Math.PI / 180;
-      parts.pickHead.x = flip * (3 + Math.cos(rad) * 12);
-      parts.pickHead.y = -10 + Math.sin(rad) * 12;
-    } else {
-      parts.pickHandle.x = flip * 3;
-      parts.pickHandle.y = -19;
-      parts.pickHandle.scaleX = flip;
-      const a = 30 - swing * 110;
-      parts.pickHandle.angle = a;
-      const rad = a * Math.PI / 180;
-      parts.pickHead.x = flip * (3 + Math.cos(rad) * 12);
-      parts.pickHead.y = -19 + Math.sin(rad) * 12;
-    }
+    const pose = SWING_POSES[scene.mineDy + 1];
+    const a = pose[2] + swing * pose[3];
+    parts.pickHandle.x = flip * pose[0];
+    parts.pickHandle.y = pose[1];
+    parts.pickHandle.scaleX = flip;
+    parts.pickHandle.angle = a;
+    const rad = a * Math.PI / 180;
+    parts.pickHead.x = flip * (pose[0] + Math.cos(rad) * 12);
+    parts.pickHead.y = pose[1] + Math.sin(rad) * 12;
     scene.mineAnim--;
   } else {
     parts.pickHandle.visible = false;
@@ -1877,7 +1795,13 @@ function buildHud(scene) {
     })
     .setDepth(20);
 
-  scene.invHud = { container: scene.add.container(8, 56).setDepth(20), rows: [] };
+  scene.villagerText = scene.add
+    .text(8, 52, 'VILLAGERS: 0', {
+      fontFamily: 'monospace', fontSize: '11px', color: '#a0e0a0',
+    })
+    .setDepth(20);
+
+  scene.invHud = { container: scene.add.container(8, 70).setDepth(20), rows: [] };
 
   scene.toastText = scene.add
     .text(GAME_WIDTH / 2, GAME_HEIGHT / 3, '', {
@@ -2229,10 +2153,7 @@ function refreshBuildMenu(scene) {
     row.bg.visible = true; row.text.visible = true;
 
     const canAfford = recipeAffordable(scene, recipe);
-    const desc = BUILD_DESC[recipe.kind] || '';
-    row.text.setText(
-      recipe.name.padEnd(15) + recipeCostLabel(recipe).padEnd(17) + (desc && ' - ' + desc)
-    );
+    row.text.setText(recipe.name.padEnd(15) + recipeCostLabel(recipe));
 
     const locked = isRecipeLocked(scene, recipe);
     let color;
@@ -2402,13 +2323,20 @@ function refreshPlacement(scene) {
   const p_ = scene.placement;
   const recipe = p_.recipe;
 
+  // Player feet row drives the wall/stair/door/bed/furnace search so they
+  // anchor on whichever floor the player is standing on (own floor, roof
+  // when climbed onto it, etc.) instead of always snapping to the highest
+  // structure in the column. BASE keeps the global search so a tall wall
+  // can receive a roof placed alongside it.
+  const feetTy = ((scene.player.y - 0.001) / TILE) | 0;
+
   // Derive ty from the anchor rule for this kind.
   let valid = true;
   if (recipe.kind === 'base') {
     const support = highestSupportInRange(scene, p_.tx, p_.tx + p_.w - 1, 0);
     if (support < 0) {
       valid = false;
-      p_.ty = ((scene.player.y - 0.001) / TILE) | 0; // fallback for preview
+      p_.ty = feetTy; // fallback for preview
     } else {
       p_.ty = support - 1; // base sits one row above support
     }
@@ -2418,7 +2346,7 @@ function refreshPlacement(scene) {
     // for furnace, which traditionally sits directly on the ground.
     const maxBottom = WORLD_H - 2;
     let bestY = -1;
-    for (let y = 1; y < maxBottom; y++) {
+    for (let y = feetTy; y < maxBottom; y++) {
       let allSupported = true;
       for (let x = p_.tx; x < p_.tx + p_.w; x++) {
         if (x < 1 || x >= WORLD_W - 1) { allSupported = false; break; }
@@ -2670,19 +2598,26 @@ function collidesBox(scene, cx, cy, w, h, solidFn) {
   return false;
 }
 
+// Difficulty scale applied to HP and damage. +15%/day, capped at 2.5×.
+function monsterScale(scene) {
+  const s = 1 + (scene.daysSurvived - 1) * 0.15;
+  return s > 2.5 ? 2.5 : s;
+}
+
+const _typesBuf = new Uint8Array(5);
 function spawnMonstersTick(scene) {
   scene.monsterSpawnTimer--;
   if (scene.monsterSpawnTimer > 0) return;
-  scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
-  if (scene.monsters.length >= MONSTER_MAX) return;
-  // Distribution: slime 30%, zombie 25%, flyer 15%, ghost 15%, bomber 15%.
-  const r = Math.random();
-  const type =
-    r < 0.30 ? MON_SLIME :
-    r < 0.55 ? MON_ZOMBIE :
-    r < 0.70 ? MON_FLYER :
-    r < 0.85 ? MON_GHOST : MON_BOMBER;
-  spawnMonster(scene, type);
+  const d = scene.daysSurvived;
+  scene.monsterSpawnTimer = Math.max(40, BASE_SPAWN_INTERVAL - (d - 1) * 5);
+  const maxMons = Math.min(BASE_MONSTER_MAX + d - 1, 24);
+  if (scene.monsters.length >= maxMons) return;
+  // Pick uniformly from the types unlocked this night.
+  const mask = NIGHT_TYPES[Math.min(d - 1, NIGHT_TYPES.length - 1)];
+  let n = 0;
+  for (let i = 0; i < 5; i++) if (mask & (1 << i)) _typesBuf[n++] = i;
+  if (n === 0) return;
+  spawnMonster(scene, _typesBuf[(Math.random() * n) | 0]);
 }
 
 function spawnMonster(scene, type) {
@@ -2704,22 +2639,22 @@ function spawnMonster(scene, type) {
 }
 
 function createMonster(scene, type, x, y) {
-  const def = MONSTER_DEFS[type];
+  const w = M_W[type];
+  const scale = monsterScale(scene);
   const m = {
     type, x, y, vx: 0, vy: 0,
-    w: def.w, h: def.h, hp: def.hp,
+    w, h: M_H[type], hp: (M_HP[type] * scale) | 0,
+    hpMax: (M_HP[type] * scale) | 0,
+    dmgScale: scale,
     facing: 1, jumpTimer: 0,
     flashTicks: 0, stunTicks: 0,
     prevX: x, stuckTicks: 0, stuck: false,
-    fuseTicks: def.explodesOnProximity ? -1 : 0,
+    fuseTicks: (M_FLAGS[type] & MF_EXPLODES) ? -1 : 0,
   };
   m.sprite = buildMonsterVisual(scene, type);
-  // Thin HP bar above the monster. Separate objects (not inside the
-  // sprite container) so the facing flip / stun tween don't mirror or
-  // fade the bar. Origin (0, 0.5) so scaleX shrinks from the left.
-  m.hpBarBg = scene.add.rectangle(0, 0, def.w, 1, 0x400010)
+  m.hpBarBg = scene.add.rectangle(0, 0, w, 1, 0x400010)
     .setOrigin(0, 0.5).setDepth(11);
-  m.hpBarFg = scene.add.rectangle(0, 0, def.w, 1, 0x60e060)
+  m.hpBarFg = scene.add.rectangle(0, 0, w, 1, 0x60e060)
     .setOrigin(0, 0.5).setDepth(11);
   return m;
 }
@@ -2733,61 +2668,31 @@ function applyMonsterDamage(scene, m, dmg) {
   m.hp -= dmg;
   m.flashTicks = 12;
   sfx(scene, 'monsterHurt');
-  // Knockback is opt-in per monster. Ghost-like enemies (future) will
-  // have receivesKnockback:false and absorb the hit without being
-  // shoved around.
-  if (MONSTER_DEFS[m.type].receivesKnockback) {
+  if (M_FLAGS[m.type] & MF_KNOCK) {
     m.stunTicks = 10;
     const knockDir = m.x < scene.player.x ? -1 : 1;
     const strength = 2 + scene.sword * 0.5;
     m.vx = knockDir * strength;
     m.vy = -strength * 0.6;
   }
-  if (m.hp <= 0) {
-    destroyMonster(scene, m);
-  }
+  if (m.hp <= 0) destroyMonster(scene, m);
 }
 
+// Monster visual: simple body + eye, body color/shape per type.
+// [bodyW, bodyH, bodyY, bodyColor, eyeColor]
+const MON_VIS = [
+  [12, 7,  -4,  0x44a060, 0x101018], // slime
+  [12, 18, -10, 0x5a7042, 0x101018], // zombie
+  [14, 7,  -4,  0x6a2a30, 0xff6060], // flyer
+  [10, 12, -8,  0xc4dcf2, 0x101018], // ghost
+  [12, 12, -8,  0x5aaa30, 0x101018], // bomber
+];
 function buildMonsterVisual(scene, type) {
   const c = scene.add.container(0, 0).setDepth(9);
-  if (type === MON_SLIME) {
-    c.add(scene.add.rectangle(0, -1.5, 12, 3, 0x44a060));
-    c.add(scene.add.rectangle(0, -4.5, 10, 3, 0x44a060));
-    c.add(scene.add.rectangle(0, -7,    6, 2, 0x44a060));
-    c.add(scene.add.rectangle(-2, -5, 1, 1, 0x101018));
-    c.add(scene.add.rectangle( 2, -5, 1, 1, 0x101018));
-  } else if (type === MON_ZOMBIE) {
-    c.add(scene.add.rectangle(-3, -3, 4, 6, 0x3a4530));      // leg L
-    c.add(scene.add.rectangle( 3, -3, 4, 6, 0x3a4530));      // leg R
-    c.add(scene.add.rectangle( 0, -11, 12, 10, 0x5a7042));   // body
-    c.add(scene.add.rectangle( 0, -19, 10, 8, 0x9eb585));    // head
-    c.add(scene.add.rectangle(-2, -19, 1, 1, 0x101018));     // eye L
-    c.add(scene.add.rectangle( 2, -19, 1, 1, 0x101018));     // eye R
-    c.add(scene.add.rectangle( 0, -16, 4, 1, 0x301010));     // mouth
-  } else if (type === MON_FLYER) {
-    c.add(scene.add.rectangle(-6, -5, 5, 3, 0x501818));      // wing L
-    c.add(scene.add.rectangle( 6, -5, 5, 3, 0x501818));      // wing R
-    c.add(scene.add.rectangle( 0, -4, 6, 6, 0x6a2a30));      // body
-    c.add(scene.add.rectangle(-1, -5, 1, 1, 0xff6060));      // eye L
-    c.add(scene.add.rectangle( 1, -5, 1, 1, 0xff6060));      // eye R
-  } else if (type === MON_GHOST) {
-    // Translucent-feel pale shape with a wavy bottom.
-    c.add(scene.add.rectangle( 0, -9, 10, 10, 0xc4dcf2));    // body
-    c.add(scene.add.rectangle(-4, -2, 3, 3, 0xc4dcf2));      // tail L
-    c.add(scene.add.rectangle( 0, -2, 3, 3, 0xc4dcf2));      // tail C
-    c.add(scene.add.rectangle( 4, -2, 3, 3, 0xc4dcf2));      // tail R
-    c.add(scene.add.rectangle(-2, -10, 2, 2, 0x101018));     // eye L
-    c.add(scene.add.rectangle( 2, -10, 2, 2, 0x101018));     // eye R
-    c.setAlpha(0.82);                                        // phasing feel
-  } else if (type === MON_BOMBER) {
-    c.add(scene.add.rectangle(-3, -2, 4, 4, 0x2a5a20));      // leg L
-    c.add(scene.add.rectangle( 3, -2, 4, 4, 0x2a5a20));      // leg R
-    c.add(scene.add.rectangle( 0, -9,  12, 10, 0x5aaa30));   // body
-    c.add(scene.add.rectangle(-2, -11, 2, 2, 0x101018));     // eye L
-    c.add(scene.add.rectangle( 2, -11, 2, 2, 0x101018));     // eye R
-    c.add(scene.add.rectangle( 0, -7,  5, 1, 0x101018));     // frown
-    c.add(scene.add.rectangle( 0, -14, 2, 2, 0x9a3028));     // fuse top
-  }
+  const v = MON_VIS[type];
+  c.add(scene.add.rectangle(0, v[2], v[0], v[1], v[3]));
+  c.add(scene.add.rectangle(2, v[2] - 1, 2, 2, v[4]));
+  if (type === MON_GHOST) c.setAlpha(0.82);
   return c;
 }
 
@@ -2806,8 +2711,7 @@ function tickMonsters(scene) {
 // array, so sword mining and monster attack stack naturally.
 const MONSTER_ATTACK_INTERVAL = 30; // 0.5 s between chip attacks
 function monsterAttackTiles(scene, m) {
-  const def = MONSTER_DEFS[m.type];
-  if (!def.canAttackTiles) return;
+  if (!(M_FLAGS[m.type] & MF_ATK_TILES)) return;
   if ((scene.tickCount % MONSTER_ATTACK_INTERVAL) !== 0) return;
   const probeX = m.x + m.facing * (m.w / 2 + 1);
   const tx = (probeX / TILE) | 0;
@@ -2825,11 +2729,11 @@ function monsterAttackTiles(scene, m) {
     const attackable =
       isStructuralTile(cell) ||
       t === WOOD ||
-      (m.stuck && (t === DIRT || t === STONE || t === GRAVEL || t === SAND));
+      (m.stuck && (t === DIRT || t === STONE || t === SAND));
     if (!attackable) continue;
     const hard = BLOCK_HARDNESS[t];
     if (hard === 0) continue;
-    scene.damage[idx] = Math.min(65535, scene.damage[idx] + def.attackDamage);
+    scene.damage[idx] = Math.min(65535, scene.damage[idx] + (M_ATK_DMG[m.type] * m.dmgScale) | 0);
     if (scene.damage[idx] >= hard) {
       scene.world[idx] = AIR;
       scene.damage[idx] = 0;
@@ -2841,17 +2745,17 @@ function monsterAttackTiles(scene, m) {
 
 function tickMonster(scene, m, p) {
   if (m.flashTicks > 0) m.flashTicks--;
-  const def = MONSTER_DEFS[m.type];
+  const type = m.type;
+  const flags = M_FLAGS[type];
+  const phases = flags & MF_PHASE;
 
-  // Stun freezes AI so knockback velocity isn't overwritten. Phasing
-  // monsters decay; collidable ones still take gravity + collision.
   if (m.stunTicks > 0) {
     m.stunTicks--;
-    if (def.ignoresCollision) {
+    if (phases) {
       m.x += m.vx; m.y += m.vy;
       m.vx *= 0.85; m.vy *= 0.85;
     } else {
-      if (def.hasGravity) m.vy += GRAVITY;
+      if (flags & MF_GRAVITY) m.vy += GRAVITY;
       moveMonsterWithCollision(scene, m);
     }
     return;
@@ -2860,50 +2764,45 @@ function tickMonster(scene, m, p) {
   const dx = p.x - m.x;
   m.facing = dx >= 0 ? 1 : -1;
 
-  if (def.aiMode === 'glide') {
-    // Point at the player's center. If the monster ignores collision
-    // (ghost-like), phase through; otherwise use standard collision so
-    // flyers bounce off ceilings and walls.
+  if (M_AI[type]) {
+    // glide
     const dy = (p.y - p.h / 2) - (m.y - m.h / 2);
     const dist = Math.hypot(dx, dy) || 1;
-    m.vx = (dx / dist) * def.glideSpeed;
-    m.vy = (dy / dist) * def.glideSpeed;
-    if (def.ignoresCollision) { m.x += m.vx; m.y += m.vy; }
-    else                       { moveMonsterWithCollision(scene, m); }
-  } else if (def.aiMode === 'ground') {
-    if (def.hasGravity) m.vy += GRAVITY;
+    const sp = M_GLIDE[type];
+    m.vx = (dx / dist) * sp;
+    m.vy = (dy / dist) * sp;
+    if (phases) { m.x += m.vx; m.y += m.vy; }
+    else        { moveMonsterWithCollision(scene, m); }
+  } else {
+    // ground
+    if (flags & MF_GRAVITY) m.vy += GRAVITY;
     const onGround = monsterOnGround(scene, m);
-    // A bomber with a burning fuse freezes in place — it's committed.
-    const fuseBurning = def.explodesOnProximity && m.fuseTicks > 0;
+    const fuseBurning = (flags & MF_EXPLODES) && m.fuseTicks > 0;
 
     if (!fuseBurning) {
       let jumpNow = false;
-      if (def.jumpTrigger === 'timer' && onGround) {
+      const trig = M_JUMP_TR[type];
+      if (trig === 1 && onGround) {
         m.jumpTimer--;
         if (m.jumpTimer <= 0) {
           jumpNow = true;
-          m.jumpTimer = def.jumpTimerMin
-            + ((Math.random() * (def.jumpTimerMax - def.jumpTimerMin)) | 0);
+          const lo = M_JUMP_MIN[type], hi = M_JUMP_MAX[type];
+          m.jumpTimer = lo + ((Math.random() * (hi - lo)) | 0);
         }
-      } else if (def.jumpTrigger === 'blocked'
-                 && onGround && monsterBlockedAhead(scene, m)) {
+      } else if (trig === 2 && onGround && monsterBlockedAhead(scene, m)) {
         jumpNow = true;
       }
-      if (jumpNow) m.vy = m.stuck ? STUCK_JUMP_VELOCITY : def.jumpVelocity;
+      if (jumpNow) m.vy = m.stuck ? STUCK_JUMP_VELOCITY : M_JUMP_V[type];
 
-      // Horizontal velocity is re-asserted every tick. This is the fix for
-      // the slime "stuck in 1-cube" bug: previously vx was only set on the
-      // jump frame, and the first wall collision zeroed it.
-      m.vx = m.facing * (onGround ? def.walkSpeed : def.airSpeed);
+      m.vx = m.facing * (onGround ? M_WALK[type] : M_AIR[type]);
     } else {
-      m.vx = 0; // frozen during fuse
+      m.vx = 0;
     }
 
     moveMonsterWithCollision(scene, m);
   }
 
-  // Stuck detection — only meaningful for monsters that collide.
-  if (!def.ignoresCollision) {
+  if (!phases) {
     const moved = Math.abs(m.x - m.prevX) > 0.1;
     if (!moved && Math.abs(m.vx) > 0.05) m.stuckTicks++;
     else                                  m.stuckTicks = 0;
@@ -2912,34 +2811,32 @@ function tickMonster(scene, m, p) {
   }
 
   monsterAttackTiles(scene, m);
-  if (def.explodesOnProximity) tickBomberFuse(scene, m, p, def);
+  if (flags & MF_EXPLODES) tickBomberFuse(scene, m, p);
 }
 
 // Bomber proximity fuse. fuseTicks < 0 means "armed but not burning";
 // once the player gets within explosionRange, it starts counting down
 // and the bomber freezes. When it hits 0 the blast fires.
-function tickBomberFuse(scene, m, p, def) {
+function tickBomberFuse(scene, m, p) {
   if (m.fuseTicks == null) m.fuseTicks = -1;
   if (m.fuseTicks < 0) {
     const dx = p.x - m.x;
     const dy = (p.y - p.h / 2) - (m.y - m.h / 2);
-    if (Math.hypot(dx, dy) <= def.explosionRange) {
-      m.fuseTicks = def.fuseTicks;
+    if (Math.hypot(dx, dy) <= M_EXP_RNG) {
+      m.fuseTicks = M_FUSE[m.type];
       sfx(scene, 'bomberFuse');
     }
     return;
   }
   m.fuseTicks--;
-  if (m.fuseTicks <= 0) bomberExplode(scene, m, def);
+  if (m.fuseTicks <= 0) bomberExplode(scene, m);
 }
 
-function bomberExplode(scene, m, def) {
+function bomberExplode(scene, m) {
   sfx(scene, 'explosion');
-  // Destroy most tiles in a circular blast. World BORDER stays intact
-  // so the map can't be blown open; everything else goes.
   const cx = (m.x / TILE) | 0;
   const cy = ((m.y - m.h / 2) / TILE) | 0;
-  const r = def.explosionRadius;
+  const r = M_EXP_RAD[m.type];
   const r2 = r * r;
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
@@ -2965,7 +2862,7 @@ function bomberExplode(scene, m, def) {
   const pdy = (p.y - p.h / 2) - centerY;
   const radPx = r * TILE;
   if (pdx * pdx + pdy * pdy <= radPx * radPx && p.invulnTicks <= 0) {
-    applyPlayerDamage(scene, def.explosionDamage);
+    applyPlayerDamage(scene, Math.max(1, (M_EXP_DMG[m.type] * m.dmgScale) | 0));
     p.invulnTicks = PLAYER_INVULN_TICKS;
   }
 
@@ -3014,7 +2911,7 @@ function checkMonsterDamage(scene) {
   for (let i = 0; i < scene.monsters.length; i++) {
     const m = scene.monsters[i];
     if (aabbOverlap(p, m)) {
-      applyPlayerDamage(scene, MONSTER_DEFS[m.type].contactDamage);
+      applyPlayerDamage(scene, Math.max(1, (M_CONTACT[m.type] * m.dmgScale) | 0));
       p.invulnTicks = PLAYER_INVULN_TICKS;
       return;
     }
@@ -3032,26 +2929,22 @@ function aabbOverlap(a, b) {
 function renderMonsters(scene) {
   for (let i = 0; i < scene.monsters.length; i++) {
     const m = scene.monsters[i];
-    const def = MONSTER_DEFS[m.type];
+    const type = m.type;
     m.sprite.setPosition(m.x - scene.cam.x, m.y - scene.cam.y);
     m.sprite.setScale(m.facing < 0 ? -1 : 1, 1);
-    // Alpha priority: fuse pulse > damage flash > baseline (ghost
-    // keeps its phasing 0.82 set in buildMonsterVisual).
-    let alpha = (m.type === MON_GHOST) ? 0.82 : 1;
+    let alpha = (type === MON_GHOST) ? 0.82 : 1;
     if (m.fuseTicks > 0) {
-      alpha = (m.fuseTicks & 6) < 3 ? 0.45 : 1; // rapid red-ish pulse
+      alpha = (m.fuseTicks & 6) < 3 ? 0.45 : 1;
     } else if (m.flashTicks > 0 && (m.flashTicks & 4)) {
       alpha = 0.3;
     }
     m.sprite.setAlpha(alpha);
 
-    // Thin HP bar — aligned to the monster's top edge.
-    const barX = m.x - scene.cam.x - def.w / 2;
+    const barX = m.x - scene.cam.x - m.w / 2;
     const barY = m.y - m.h - 3 - scene.cam.y;
     m.hpBarBg.setPosition(barX, barY);
     m.hpBarFg.setPosition(barX, barY);
-    const ratio = Math.max(0, m.hp / def.hp);
-    m.hpBarFg.scaleX = ratio;
+    m.hpBarFg.scaleX = Math.max(0, m.hp / m.hpMax);
   }
 }
 
@@ -3063,7 +2956,118 @@ function despawnAllMonsters(scene) {
     if (m.hpBarFg) m.hpBarFg.destroy();
   }
   scene.monsters.length = 0;
-  scene.monsterSpawnTimer = MONSTER_SPAWN_INTERVAL;
+  scene.monsterSpawnTimer = BASE_SPAWN_INTERVAL;
+}
+
+// ----- Villagers: 9..80-cell rooms with ≥1 bed and ≥1 built wall.
+const VILLAGER_BODY_COLORS = [0x4060a0, 0xa04060, 0x60a040, 0x806020];
+
+// Returns array of [bedIdx, bedKind] pairs, one per bed in a valid room.
+function scanVillages(scene) {
+  const w = scene.world;
+  const visited = scene.visited;
+  scene.visitedTag = (scene.visitedTag + 1) & 0xff;
+  if (scene.visitedTag === 0) { visited.fill(0); scene.visitedTag = 1; }
+  const tag = scene.visitedTag;
+  const queue = scene.bfsQueue;
+  const out = [];
+  for (let s = 0; s < WORLD_W * WORLD_H; s++) {
+    if (visited[s] === tag) continue;
+    if ((w[s] & TYPE_MASK) !== AIR) continue;
+    let qh = 0, qt = 0;
+    queue[qt++] = s; visited[s] = tag;
+    let vol = 0, ok = 1, builtWalls = 0;
+    const beds = [];
+    while (qh < qt) {
+      const idx = queue[qh++];
+      if (++vol > 80) { ok = 0; break; }
+      const x = idx % WORLD_W, y = (idx / WORLD_W) | 0;
+      if (x <= 1 || x >= WORLD_W - 2 || y <= 1 || y >= WORLD_H - 2) { ok = 0; break; }
+      const nbrs = [idx - 1, idx + 1, idx - WORLD_W, idx + WORLD_W];
+      for (let k = 0; k < 4; k++) {
+        const n = nbrs[k];
+        if (visited[n] === tag) continue;
+        const nt = w[n] & TYPE_MASK;
+        if (nt === AIR) { visited[n] = tag; if (qt < queue.length) queue[qt++] = n; }
+        else if (nt === BED_WOOD || nt === BED_IRON) { visited[n] = tag; beds.push(n, nt); }
+        else if (isStructuralTile(w[n])) builtWalls++;
+      }
+    }
+    if (ok && vol >= 9 && beds.length && builtWalls > 0)
+      for (let i = 0; i < beds.length; i += 2) out.push(beds[i], beds[i + 1]);
+  }
+  return out;
+}
+
+// Reconcile villagers with the bed list (pairs of [idx, kind]).
+function syncVillagers(scene, beds) {
+  const list = scene.villagers;
+  for (let i = list.length - 1; i >= 0; i--) {
+    let found = 0;
+    for (let j = 0; j < beds.length; j += 2) if (beds[j] === list[i].bedIdx) { found = 1; break; }
+    if (!found) { list[i].sprite.destroy(); list.splice(i, 1); }
+  }
+  for (let j = 0; j < beds.length; j += 2) {
+    const idx = beds[j];
+    let exists = 0;
+    for (const v of list) if (v.bedIdx === idx) { exists = 1; break; }
+    if (exists) continue;
+    const color = VILLAGER_BODY_COLORS[(j / 2) % VILLAGER_BODY_COLORS.length];
+    const c = buildHumanVisual(scene, 9, color).c;
+    list.push({
+      x: (idx % WORLD_W) * TILE + TILE / 2,
+      y: ((idx / WORLD_W) | 0) * TILE + TILE,
+      w: 14, h: 26,
+      vx: 0, vy: 0, facing: 1, dirTimer: 30,
+      bedIdx: idx, sprite: c,
+    });
+  }
+  scene.villagerCount = list.length;
+}
+
+function killVillager(scene, v) {
+  v.sprite.destroy();
+  scene.villagers.splice(scene.villagers.indexOf(v), 1);
+  scene.villagerCount = scene.villagers.length;
+}
+
+function tickVillagers(scene) {
+  const night = scene.nightActive;
+  for (let i = scene.villagers.length - 1; i >= 0; i--) {
+    const v = scene.villagers[i];
+    if (night) {
+      v.x = (v.bedIdx % WORLD_W) * TILE + TILE / 2;
+      v.y = ((v.bedIdx / WORLD_W) | 0) * TILE + TILE;
+      v.vx = 0; v.vy = 0;
+    } else {
+      if (--v.dirTimer <= 0) {
+        v.facing = Math.random() < 0.5 ? -1 : 1;
+        v.dirTimer = 60 + (Math.random() * 120 | 0);
+      }
+      v.vx = v.facing * 0.4;
+      v.vy = Math.min(TERMINAL_VY, v.vy + GRAVITY);
+      v.x += v.vx;
+      if (collidesBox(scene, v.x, v.y, v.w, v.h, isSolidForPlayer)) { v.x -= v.vx; v.facing = -v.facing; v.vx = 0; }
+      v.y += v.vy;
+      if (collidesBox(scene, v.x, v.y, v.w, v.h, isSolidForPlayer)) {
+        v.y -= v.vy;
+        if (v.vy > 0) v.y = Math.ceil(v.y / TILE) * TILE;
+        v.vy = 0;
+      }
+    }
+    const st = liquidStatus(scene, v);
+    let dead = st.touchingLava || st.fullyInWater;
+    if (!dead) for (const m of scene.monsters) if (aabbOverlap(v, m)) { dead = 1; break; }
+    if (dead) killVillager(scene, v);
+  }
+}
+
+function renderVillagers(scene) {
+  for (let i = 0; i < scene.villagers.length; i++) {
+    const v = scene.villagers[i];
+    v.sprite.setPosition(v.x - scene.cam.x, v.y - scene.cam.y);
+    v.sprite.setScale(v.facing < 0 ? -1 : 1, 1);
+  }
 }
 
 // ============================================================
