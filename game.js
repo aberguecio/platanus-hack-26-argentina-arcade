@@ -108,8 +108,8 @@ const BLOCKS = [
   { id: CLOUD,        name: 'cloud',        cat: CAT_DECOR,   color: 0xffe8eef0 },
   // Bricks generated below from a small table — F_IS_BRICK drives outlined
   // edge; hardness equals the raw mat; drop = 1 of the smelted form.
-  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC, color: 0xff2a5088, hardness: 4,  drop: WOOD       },
-  { id: DOOR_IRON,    name: 'iron door',    cat: CAT_MAGIC, color: 0xff708090, hardness: 80, drop: IRON_INGOT },
+  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC, color: 0xff2a5088, hardness: 12,  drop: WOOD       },
+  { id: DOOR_IRON,    name: 'iron door',    cat: CAT_MAGIC, color: 0xff708090, hardness: 240, drop: IRON_INGOT },
   { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC, color: 0xff3478b0, hardness: 4,  drop: WOOD       },
   { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC, color: 0xff4050c0, hardness: 4,  drop: WOOD         },
   { id: BED_COPPER,   name: 'copper bed',   cat: CAT_MAGIC, color: 0xff8060d0, hardness: 40, drop: COPPER_INGOT },
@@ -120,11 +120,12 @@ const BLOCKS = [
   { id: MITHRIL_INGOT,name: 'mithril ingot',cat: CAT_AIR,     color: 0xffe0e8f0, armor: 3 },
 ];
 // Generate the 4 brick rows from a compact table (id, raw-mat name, color, hardness).
+// Built walls/bases get 3× the raw material hardness.
 for (const [id, n, color, hardness] of [
-  [BRICK_DIRT,   'dirt',   0xff3a5880, 10],
-  [BRICK_STONE,  'stone',  0xff8a8a90, 20],
-  [BRICK_COPPER, 'copper', 0xff4080c8, 40],
-  [BRICK_IRON,   'iron',   0xff708090, 80],
+  [BRICK_DIRT,   'dirt',   0xff3a5880, 30],
+  [BRICK_STONE,  'stone',  0xff8a8a90, 60],
+  [BRICK_COPPER, 'copper', 0xff4080c8, 120],
+  [BRICK_IRON,   'iron',   0xff708090, 240],
 ]) BLOCKS.push({ id, name: n + ' brick', cat: CAT_MAGIC, color, hardness, flags: F_IS_BRICK });
 
 // raw mat → smelted equivalent (brick drops + tool tier costs + furnace).
@@ -260,8 +261,8 @@ const PLAYER_INVULN_TICKS = 30;     // grace period from monster contact
 // ----- Monsters -----
 const MON_SLIME = 0, MON_ZOMBIE = 1, MON_FLYER = 2,
       MON_GHOST = 3, MON_BOMBER = 4;
-const BASE_SPAWN_INTERVAL = 90;
-const BASE_MONSTER_MAX = 10;
+const BASE_SPAWN_INTERVAL = 120;
+const BASE_MONSTER_MAX = 5;
 
 // Bitmask of allowed types per night (index = daysSurvived - 1, clamped
 // to the last entry). Bit i = type i. Adding a new monster = update
@@ -272,9 +273,9 @@ const NIGHT_TYPES = new Uint8Array([
   0b00111, // n3: + slime
   0b00111, // n4
   0b00111, // n5
-  0b01111, // n6: + ghost
-  0b01111, // n7
-  0b11111, // n8+: + bomber
+  0b00111, // n6
+  0b00111, // n7
+  0b10111, // n8+: + bomber (ghost is special, not in normal pool)
 ]);
 
 // Stuck escalation — if a monster tries to move but hasn't made
@@ -292,7 +293,7 @@ const MF_GRAVITY = 1, MF_PHASE = 2, MF_KNOCK = 4, MF_ATK_TILES = 8,
 //                                       SLIME ZOMBIE FLYER GHOST BOMBER
 const M_W        = new Uint8Array([        12,   12,   14,   12,   12]);
 const M_H        = new Uint8Array([         8,   22,    8,   14,   14]);
-const M_HP       = new Uint8Array([        25,   45,   25,   22,   35]);
+const M_HP       = new Uint8Array([        25,   30,   25,   60,   35]);
 const M_FLAGS    = new Uint8Array([
   MF_GRAVITY|MF_KNOCK|MF_ATK_TILES|MF_JUMP_TIMER,            // SLIME
   MF_GRAVITY|MF_KNOCK|MF_ATK_TILES|MF_JUMP_BLOCKED,          // ZOMBIE
@@ -306,12 +307,12 @@ const M_GLIDE    = [0,    0,    0.8,  0.55, 0];
 const M_JUMP_V   = [-3.5, -4.2, 0,    0,    -4.0];
 const M_JUMP_MIN = new Uint8Array([30, 0, 0, 0, 0]);
 const M_JUMP_MAX = new Uint8Array([60, 0, 0, 0, 0]);
-const M_ATK_DMG  = new Uint8Array([3, 5, 3, 0, 0]);
-const M_CONTACT  = new Uint8Array([1, 2, 1, 2, 0]);
+const M_ATK_DMG  = new Uint8Array([3, 3, 3, 0, 0]);
+const M_CONTACT  = new Uint8Array([1, 1, 1, 2, 0]);
 const M_FUSE     = new Uint8Array([0, 0, 0, 0, 45]);
-const M_EXP_RAD  = new Uint8Array([0, 0, 0, 0, 3]);
+const M_EXP_RAD  = new Uint8Array([0, 0, 0, 0, 4]);
 const M_EXP_DMG  = new Uint8Array([0, 0, 0, 0, 5]);
-const M_EXP_RNG  = 2.2 * TILE; // bomber-only constant
+const M_EXP_RNG  = 4 * TILE; // bomber fuse area = same as blast radius
 
 const GRASS_COLOR = 0xff2c8845; // visual-only: dirt with air above
 
@@ -486,6 +487,7 @@ function create() {
   // Monsters (only present during night).
   scene.monsters = [];
   scene.monsterSpawnTimer = BASE_SPAWN_INTERVAL;
+  scene.ghostSpawnTimer = 4 * TICK_RATE;
 
   // Villagers — populated by scanVillages at every dawn.
   scene.villagers = [];
@@ -699,6 +701,7 @@ function runTick(scene) {
   // Night-only systems: monsters spawn, walk/jump/fly, and damage on touch.
   if (scene.nightActive) {
     spawnMonstersTick(scene);
+    tickGhostSpawner(scene);
     tickMonsters(scene);
     checkMonsterDamage(scene);
   }
@@ -733,8 +736,8 @@ function endNight(scene) {
   despawnAllMonsters(scene);
   regrowTrees(scene, 4); // compensate for whatever monsters chewed
   syncVillagers(scene, scanVillages(scene));
-  // Score = sum of villagers alive at every dawn.
-  scene.score = (scene.score || 0) + scene.villagerCount;
+  // Score = villagers alive at dawn + 1 for the player (counts as a villager).
+  scene.score = (scene.score || 0) + scene.villagerCount + 1;
   showToast(scene, 'DAY BREAKS!');
 }
 
@@ -1488,6 +1491,9 @@ function applyPlayerDamage(scene, amt) {
 function onPlayerDeath(scene) {
   if (scene.gameOver) return;
   scene.gameOver = true;
+  // Drain pressed inputs so name-entry doesn't auto-resolve.
+  const cp = scene.controls.pressed;
+  for (const k in cp) cp[k] = false;
   const sc = scene.score || 0;
   const hs = scene.highscores;
   if (hs.length < 5 || sc > hs[hs.length - 1].s) {
@@ -1499,14 +1505,14 @@ function onPlayerDeath(scene) {
 
 function refreshDeathModal(scene) {
   const ne = scene.nameEntry;
-  let t = 'SCORE: ' + (scene.score || 0) + '   DAYS: ' + scene.daysSurvived;
+  let t = 'SCORE: ' + (scene.score || 0) + ' D' + scene.daysSurvived;
   if (ne) {
     let r = '';
     for (let i = 0; i < 3; i++) {
       const c = _AZ[ne.letters[i]];
       r += i === ne.cursor ? '[' + c + ']' : ' ' + c + ' ';
     }
-    t += '\n\nNEW HIGH!\n' + r + '\nL/R U/D OK';
+    t += '\n\nHIGH!\n' + r + '\nL/R U/D';
   } else {
     const hs = scene.highscores;
     if (hs.length) {
@@ -2531,31 +2537,56 @@ function spawnMonstersTick(scene) {
   scene.monsterSpawnTimer--;
   if (scene.monsterSpawnTimer > 0) return;
   const d = scene.daysSurvived;
-  scene.monsterSpawnTimer = Math.max(40, BASE_SPAWN_INTERVAL - (d - 1) * 5);
-  const maxMons = Math.min(BASE_MONSTER_MAX + d - 1, 24);
+  scene.monsterSpawnTimer = Math.max(40, BASE_SPAWN_INTERVAL - (d - 1) * 8);
+  const maxMons = Math.min(BASE_MONSTER_MAX + (d - 1) * 2, 24);
   if (scene.monsters.length >= maxMons) return;
   // Pick uniformly from the types unlocked this night.
   const mask = NIGHT_TYPES[Math.min(d - 1, NIGHT_TYPES.length - 1)];
   let n = 0;
   for (let i = 0; i < 5; i++) if (mask & (1 << i)) _typesBuf[n++] = i;
   if (n === 0) return;
-  spawnMonster(scene, _typesBuf[(Math.random() * n) | 0]);
+  const chosen = _typesBuf[(Math.random() * n) | 0];
+  // Slime "rains" — spawn 3 at once from the sky.
+  const count = chosen === MON_SLIME ? 3 : 1;
+  for (let k = 0; k < count && scene.monsters.length < maxMons; k++) spawnMonster(scene, chosen);
+}
+
+// True when player is well below the local surface — used to trigger
+// ghost spawns from the bottom corners (anti-bunker mechanic).
+function isPlayerUnderground(scene) {
+  const tx = clamp((scene.player.x / TILE) | 0, 1, WORLD_W - 2);
+  return scene.player.y > findSurface(scene.world, tx) * TILE + 6 * TILE;
+}
+
+function tickGhostSpawner(scene) {
+  if (!isPlayerUnderground(scene)) return;
+  if (--scene.ghostSpawnTimer > 0) return;
+  scene.ghostSpawnTimer = 4 * TICK_RATE;
+  let g = 0;
+  for (const m of scene.monsters) if (m.type === MON_GHOST) g++;
+  if (g >= 3) return;
+  const x = (Math.random() < 0.5 ? 2 : WORLD_W - 3) * TILE;
+  const y = (WORLD_H - 10) * TILE;
+  scene.monsters.push(createMonster(scene, MON_GHOST, x, y));
 }
 
 function spawnMonster(scene, type) {
   const p = scene.player;
-  const side = Math.random() < 0.5 ? -1 : 1;
-  const offset = GAME_WIDTH / 2 + 24;
-  let x = p.x + side * offset;
-  x = Math.max(2 * TILE, Math.min((WORLD_W - 2) * TILE, x));
-  let y;
-  if (type === MON_FLYER || type === MON_GHOST) {
-    // Aerial monsters spawn near the upper edge of the viewport.
-    y = Math.max(8 * TILE, p.y - GAME_HEIGHT * 0.4);
+  let x, y;
+  if (type === MON_SLIME) {
+    // Sky-rain: random X within viewport, spawn just above camera top.
+    x = scene.cam.x + Math.random() * GAME_WIDTH;
+    x = Math.max(2 * TILE, Math.min((WORLD_W - 2) * TILE, x));
+    y = Math.max(2 * TILE, scene.cam.y - 20);
   } else {
-    const tx = Math.max(1, Math.min(WORLD_W - 2, (x / TILE) | 0));
-    const surfY = findSurface(scene.world, tx);
-    y = surfY * TILE;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    x = Math.max(2 * TILE, Math.min((WORLD_W - 2) * TILE, p.x + side * (GAME_WIDTH / 2 + 24)));
+    if (type === MON_FLYER || type === MON_GHOST) {
+      y = Math.max(8 * TILE, p.y - GAME_HEIGHT * 0.4);
+    } else {
+      const tx = Math.max(1, Math.min(WORLD_W - 2, (x / TILE) | 0));
+      y = findSurface(scene.world, tx) * TILE;
+    }
   }
   scene.monsters.push(createMonster(scene, type, x, y));
 }
@@ -2603,7 +2634,7 @@ function applyMonsterDamage(scene, m, dmg) {
 // Monster visual: flat [bodyW, bodyH, bodyY, bodyColor, eyeColor] × 5.
 const MON_VIS = [
   12, 7,  -4,  0x44a060, 0x101018,   // slime
-  12, 18, -10, 0x5a7042, 0x101018,   // zombie
+  10, 14, -7,  0x4a5d2a, 0x101018,   // zombie torso (head added in builder)
   14, 7,  -4,  0x6a2a30, 0xff6060,   // flyer
   10, 12, -8,  0xc4dcf2, 0x101018,   // ghost
   12, 12, -8,  0x5aaa30, 0x101018,   // bomber
@@ -2611,8 +2642,15 @@ const MON_VIS = [
 function buildMonsterVisual(scene, type) {
   const c = scene.add.container(0, 0).setDepth(9);
   const o = type * 5;
-  c.add(scene.add.rectangle(0, MON_VIS[o + 2], MON_VIS[o], MON_VIS[o + 1], MON_VIS[o + 3]));
-  c.add(scene.add.rectangle(2, MON_VIS[o + 2] - 1, 2, 2, MON_VIS[o + 4]));
+  const by = MON_VIS[o + 2];
+  c.add(scene.add.rectangle(0, by, MON_VIS[o], MON_VIS[o + 1], MON_VIS[o + 3]));
+  // Zombie: distinct head on top of the torso so it doesn't read as a slime.
+  if (type === MON_ZOMBIE) {
+    c.add(scene.add.rectangle(0, by - 11, 8, 7, 0x7a8c4c));
+    c.add(scene.add.rectangle(2, by - 12, 2, 2, MON_VIS[o + 4]));
+  } else {
+    c.add(scene.add.rectangle(2, by - 1, 2, 2, MON_VIS[o + 4]));
+  }
   if (type === MON_GHOST) c.setAlpha(0.82);
   return c;
 }
@@ -2634,26 +2672,24 @@ const MONSTER_ATTACK_INTERVAL = 30; // 0.5 s between chip attacks
 function monsterAttackTiles(scene, m) {
   if (!(M_FLAGS[m.type] & MF_ATK_TILES)) return;
   if ((scene.tickCount % MONSTER_ATTACK_INTERVAL) !== 0) return;
-  const probeX = m.x + m.facing * (m.w / 2 + 1);
-  const tx = (probeX / TILE) | 0;
-  if (tx < 1 || tx >= WORLD_W - 1) return;
+  // Iterate front column, then tile below feet (so a monster standing on
+  // a built block still chews it).
+  const fx = ((m.x + m.facing * (m.w / 2 + 1)) / TILE) | 0;
   const yStart = ((m.y - m.h) / TILE) | 0;
   const yEnd = ((m.y - 0.001) / TILE) | 0;
-  for (let ty = yStart; ty <= yEnd; ty++) {
-    if (ty < 1 || ty >= WORLD_H - 1) continue;
+  const yFeet = (m.y / TILE) | 0;
+  for (let i = yStart; i <= yEnd + 1; i++) {
+    const tx = i <= yEnd ? fx : (m.x / TILE) | 0;
+    const ty = i <= yEnd ? i : yFeet;
+    if (tx < 1 || tx >= WORLD_W - 1 || ty < 1 || ty >= WORLD_H - 1) continue;
     const idx = ty * WORLD_W + tx;
     const cell = scene.world[idx];
     const t = cell & TYPE_MASK;
-    // Structures are always fair game. Trees (WOOD) too — monsters
-    // always chew through. Raw terrain only when the monster is stuck
-    // so they don't raze the landscape on the way to the player.
-    const attackable =
-      isStructuralTile(cell) ||
-      t === WOOD ||
-      (m.stuck && (t === DIRT || t === STONE || t === SAND));
-    if (!attackable) continue;
-    applyTileDamage(scene, idx, (M_ATK_DMG[m.type] * m.dmgScale) | 0);
-    return; // one tile per attack
+    if (isStructuralTile(cell) || t === WOOD ||
+        (m.stuck && (t === DIRT || t === STONE || t === SAND))) {
+      applyTileDamage(scene, idx, (M_ATK_DMG[m.type] * m.dmgScale) | 0);
+      return;
+    }
   }
 }
 
@@ -2746,6 +2782,11 @@ function bomberExplode(scene, m) {
   const cx = (m.x / TILE) | 0;
   const cy = ((m.y - m.h / 2) / TILE) | 0;
   const r = M_EXP_RAD[m.type];
+  // Visual flash sized to the blast radius.
+  const flash = scene.add.rectangle(
+    (cx + 0.5) * TILE - scene.cam.x, (cy + 0.5) * TILE - scene.cam.y,
+    r * 2 * TILE, r * 2 * TILE, 0xff8030, 0.7).setDepth(40);
+  scene.tweens.add({ targets: flash, alpha: 0, duration: 350, onComplete: () => flash.destroy() });
   const r2 = r * r;
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
