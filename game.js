@@ -166,12 +166,19 @@ const TIER_SWORD_NAMES = TIER_NAMES.map((n, i) => i === 0 ? 'FISTS' : n + ' SWOR
 // Tools cost 10 of mat for tier 1 (wood — easy to start) and 100 for the
 // rest. F_IS_MINERAL materials consume their smelted ingot.
 const TOOL_RECIPES = [];
-const BUILDING_RECIPES = [];
+// Wood-cost builds first — these are what a new player can craft right
+// after the wooden pickaxe. Then BASE/WALL by tier (dirt → obsidian).
+// Advanced singletons (need stone/iron) at the end.
+const BUILDING_RECIPES = [
+  { name: 'DOOR',  kind: 'door',  material: WOOD, tile: DOOR_WOOD,  costTotal: 10 },
+  { name: 'STAIR', kind: 'stair', material: WOOD, tile: STAIR_WOOD, costPerTile: 10 },
+  { name: 'BED',   kind: 'bed',   material: WOOD, tile: BED_WOOD,   costTotal: 10 },
+];
 for (const b of BLOCKS) {
   const matId = MAT_TO_INGOT[b.id] || b.id;
   const NAME = b.name.toUpperCase();
   if ((b.flags & F_FOR_TOOL) && b.tier) {
-    const cost = [[matId, b.tier === 1 ? 10 : 100]];
+    const cost = [[matId, b.tier === 1 ? 10 : 50]];
     TOOL_RECIPES.push({ name: TIER_PICK_NAMES[b.tier],  cost, pickTier:  b.tier });
     TOOL_RECIPES.push({ name: TIER_SWORD_NAMES[b.tier], cost, swordTier: b.tier });
   }
@@ -180,12 +187,12 @@ for (const b of BLOCKS) {
     BUILDING_RECIPES.push({ name: 'WALL ' + NAME, kind: 'wall', material: matId, tile: b.brick, costPerTile: 10 });
   }
 }
+// BLOCKS lists wood after the minerals, so the tool loop produces them
+// out of progression order. Sort by tier so wooden tools come first.
+TOOL_RECIPES.sort((a, b) => (a.pickTier || a.swordTier) - (b.pickTier || b.swordTier));
 BUILDING_RECIPES.push(
-  { name: 'DOOR',    kind: 'door',    material: WOOD,       tile: DOOR_WOOD,  costTotal: 10 },
-  { name: 'STAIR',   kind: 'stair',   material: WOOD,       tile: STAIR_WOOD, costPerTile: 10 },
-  { name: 'BED',     kind: 'bed',     material: WOOD,       tile: BED_WOOD,   costTotal: 10 },
-  { name: 'IRON BED',kind: 'bed',     material: IRON_INGOT, tile: BED_IRON,   costTotal: 10 },
-  { name: 'FURNACE', kind: 'furnace', material: STONE,      tile: FURNACE,    costTotal: 50 },
+  { name: 'FURNACE', kind: 'furnace', material: STONE,      tile: FURNACE,  costTotal: 50 },
+  { name: 'IRON BED',kind: 'bed',     material: IRON_INGOT, tile: BED_IRON, costTotal: 10 },
 );
 
 // Per-kind defaults for the placement mode. `resize` says which axis
@@ -212,17 +219,24 @@ const DAY_BASE_SECONDS = 120;
 const DAY_INCREMENT_SECONDS = 10;
 
 // ----- Tutorial steps -----
-// Step 0 = no banner, steps 1..4 each display a single line of guidance
-// that auto-advances when a condition is met. Step 5 hides the banner.
+// Step 0 = no banner. Each step auto-advances when its check fires.
+// Last step holds for TUTORIAL_FINAL_HOLD_TICKS, then hides.
 const TUTORIAL_STEPS = [
   '',
-  'GO TO A TREE AND HIT IT WITH U A FEW TIMES',
-  'NICE! GET 10 WOOD TOTAL',
-  'OPEN THE MENU WITH I AND CRAFT THE WOODEN PICKAXE',
-  'GATHER MATERIALS FOR YOUR BASE - MONSTERS COME AT NIGHT\nCRAFT A SWORD OR BUILD WALLS\nDOUBLE-TAP O TO SKIP DAY (IF TIRED) OR SLEEP IN A BED\nGOOD LUCK!',
+  'HIT A TREE WITH U',
+  'GET 10 WOOD TOTAL',
+  'OPEN MENU (I), CRAFT WOODEN PICKAXE',
+  'BUILD A BASE: U/D RESIZE, L/R MOVE, U TO PLACE',
+  'PLACE A BED ON THE BASE',
+  'TIRED? DOUBLE-TAP O TO SKIP TO NIGHT',
+  'AT NIGHT, DOUBLE-TAP O ON A BED TO SLEEP',
+  'BUILD A FURNACE AND SMELT ORE WITH WOOD',
+  'CLOSE OFF THE BASE — VILLAGERS ARRIVE AT DAWN',
+  '+1 POINT PER VILLAGER ALIVE EACH NIGHT. GOOD LUCK!',
   '',
 ];
 const TUTORIAL_FINAL_HOLD_TICKS = 8 * TICK_RATE;
+const TUTORIAL_FINAL_STEP = TUTORIAL_STEPS.length - 2;
 
 // ----- Leaf decay -----
 // Leaves not connected (via WOOD + LEAVES chain) to a trunk wither away.
@@ -482,28 +496,26 @@ function create() {
 // ============================================================
 
 function generateWorld(w) {
-  let seed = (Math.random() * 0xffffffff) >>> 0;
-  const rnd = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 4294967296;
-  };
+  const rnd = makeRng((Math.random() * 0xffffffff) >>> 0);
 
-  for (let y = 0; y < WORLD_H; y++) {
-    for (let x = 0; x < WORLD_W; x++) {
+  // Stratify the world: sky / dirt skin / stone / hard rock at depth.
+  // The sine wave gives the surface a gentle rolling profile.
+  for (let x = 0; x < WORLD_W; x++) {
+    const wave = Math.sin(x * 0.06) * 3 + Math.sin(x * 0.21) * 2;
+    const surfaceY = (60 + wave) | 0;
+    for (let y = 0; y < WORLD_H; y++) {
       const idx = y * WORLD_W + x;
-      if (x === 0 || x === WORLD_W - 1 || y === WORLD_H - 1) {
-        w[idx] = BORDER;
-        continue;
-      }
-      const wave = Math.sin(x * 0.06) * 3 + Math.sin(x * 0.21) * 2;
-      const surfaceY = (60 + wave) | 0;
-      if (y < surfaceY)          w[idx] = AIR;
-      else if (y < surfaceY + 8) w[idx] = DIRT;
-      else if (y < 160)          w[idx] = STONE;
-      else                       w[idx] = HARD_ROCK;
+      if (x === 0 || x === WORLD_W - 1 || y === WORLD_H - 1) w[idx] = BORDER;
+      else if (y < surfaceY)          w[idx] = AIR;
+      else if (y < surfaceY + 8)      w[idx] = DIRT;
+      else if (y < 160)               w[idx] = STONE;
+      else                            w[idx] = HARD_ROCK;
     }
   }
 
+  // Single helper: scatter `count` blobs of `fill` into existing `only`
+  // cells, within the y-band [yLo, yHi]. Used for veins, water/lava
+  // pockets, caves, AND clouds (filling AIR up high with CLOUD).
   const pocket = (count, fill, only, yLo, yHi, rxMax, ryMax) => {
     for (let i = 0; i < count; i++) {
       const cx = 4 + ((rnd() * (WORLD_W - 8)) | 0);
@@ -516,22 +528,30 @@ function generateWorld(w) {
 
   // [count, fill, baseTarget, yLo, yHi, rxMax, ryMax]
   const VEINS = [
-    [50,  SAND,   STONE,     70,  155, 11, 7],
-    [40,  WATER,  STONE,     70,  155, 9,  6],
-    [25,  LAVA,   STONE,     140, 160, 3,  2],
-    [80,  COPPER, STONE,     90,  158, 2,  2],
-    [90,  AIR,    STONE,     75,  160, 4,  2],
-    [110, LAVA,   HARD_ROCK, 165, 505, 4,  3],
-    [50,  WATER,  HARD_ROCK, 165, 400, 6,  4],
-    [90,  COPPER, HARD_ROCK, 165, 400, 2,  2],
+    [15,  CLOUD,   AIR,       8,   43,  5,  2],
+    [50,  SAND,    STONE,     70,  155, 11, 7],
+    [40,  WATER,   STONE,     70,  155, 9,  6],
+    [25,  LAVA,    STONE,     140, 160, 3,  2],
+    [80,  COPPER,  STONE,     90,  158, 2,  2],
+    [90,  AIR,     STONE,     75,  160, 4,  2],
+    [110, LAVA,    HARD_ROCK, 165, 505, 4,  3],
+    [50,  WATER,   HARD_ROCK, 165, 400, 6,  4],
+    [90,  COPPER,  HARD_ROCK, 165, 400, 2,  2],
     [180, IRON,    HARD_ROCK, 280, 505, 2,  2],
     [60,  MITHRIL, HARD_ROCK, 400, 505, 2,  2],
     [140, AIR,     HARD_ROCK, 165, 505, 5,  3],
   ];
   for (const v of VEINS) pocket(v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
 
-  placeClouds(w, rnd);
-  placeTrees(w, rnd);
+  for (let a = 0; a < 60; a++) plantTree(w, rnd, 10 + ((rnd() * (WORLD_W - 20)) | 0));
+}
+
+// Linear-congruential generator factory shared by world gen + regrow.
+function makeRng(seed) {
+  return () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
 }
 
 // Plant a single tree at column `tx`. Returns true on success. Shared
@@ -566,44 +586,14 @@ function plantTree(w, rnd, tx) {
   return true;
 }
 
-function placeTrees(w, rnd) {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    plantTree(w, rnd, 10 + ((rnd() * (WORLD_W - 20)) | 0));
-  }
-}
-
 // At dawn, sprinkle a handful of fresh trees so monster chew doesn't
-// deforest the map over a few days.
+// deforest the map over a few days. Deterministic seed (per-day) keeps
+// the regrowth pattern reproducible.
 function regrowTrees(scene, count) {
-  let seed = ((scene.tickCount + scene.daysSurvived * 9973) * 0x9e3779b1) >>> 0;
-  const rnd = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 4294967296;
-  };
+  const rnd = makeRng(((scene.tickCount + scene.daysSurvived * 9973) * 0x9e3779b1) >>> 0);
   let planted = 0;
   for (let a = 0; a < count * 8 && planted < count; a++) {
-    const tx = 10 + ((rnd() * (WORLD_W - 20)) | 0);
-    if (plantTree(scene.world, rnd, tx)) planted++;
-  }
-}
-
-function placeClouds(w, rnd) {
-  for (let i = 0; i < 15; i++) {
-    const cx = 4 + ((rnd() * (WORLD_W - 8)) | 0);
-    const cy = 8 + ((rnd() * 35) | 0);      // upper sky band
-    const rx = 3 + ((rnd() * 5) | 0);
-    const ry = 1 + ((rnd() * 2) | 0);
-    for (let y = cy - ry; y <= cy + ry; y++) {
-      for (let x = cx - rx; x <= cx + rx; x++) {
-        if (x < 1 || x >= WORLD_W - 1 || y < 1 || y >= WORLD_H - 1) continue;
-        const nx = (x - cx) / rx;
-        const ny = (y - cy) / ry;
-        if (nx * nx + ny * ny <= 1) {
-          const idx = y * WORLD_W + x;
-          if ((w[idx] & TYPE_MASK) === AIR) w[idx] = CLOUD;
-        }
-      }
-    }
+    if (plantTree(scene.world, rnd, 10 + ((rnd() * (WORLD_W - 20)) | 0))) planted++;
   }
 }
 
@@ -667,6 +657,7 @@ function update(_time, delta) {
   refreshHpHud(scene);
   scene.toolText.setText('TOOL: ' + getActiveToolName(scene));
   scene.villagerText.setText('VILLAGERS: ' + scene.villagerCount);
+  scene.scoreText.setText('SCORE: ' + (scene.score || 0));
 
   if (DEBUG_HUD) {
     scene.hud.setText(
@@ -730,6 +721,8 @@ function endNight(scene) {
   despawnAllMonsters(scene);
   regrowTrees(scene, 4); // compensate for whatever monsters chewed
   syncVillagers(scene, scanVillages(scene));
+  // Score = sum of villagers alive at every dawn.
+  scene.score = (scene.score || 0) + scene.villagerCount;
   showToast(scene, 'DAY BREAKS!');
 }
 
@@ -1082,11 +1075,13 @@ function handleInput(scene) {
   }
   c.pressed.P1_U = false;
 
-  // U (P1_1) — one press per action. Day: mine a tile (direction from
-  // joystick, fallback to facing). Night: swing the sword at any monster
-  // in front of the player. No mining at night by design.
-  if (c.pressed.P1_1) {
+  // U (P1_1) — single press fires immediately; holding U auto-repeats
+  // 4 times per second (every 15 ticks). Day: mine. Night: sword swing.
+  if (c.held.P1_1) scene.holdU = (scene.holdU || 0) + 1;
+  else scene.holdU = 0;
+  if (c.pressed.P1_1 || scene.holdU >= 15) {
     c.pressed.P1_1 = false;
+    scene.holdU = 0;
     if (scene.nightActive) {
       tryAttack(scene);
     } else {
@@ -1364,8 +1359,9 @@ function handleOPress(scene) {
     if (night) {
       scene.nightTicksRemaining -= bed === BED_IRON ? (scene.nightLengthTicks / 2) | 0 : 30 * TICK_RATE;
       scene.sleptThisNight = true;
+      scene.everSlept = true;
       showToast(scene, 'ZZZ...');
-    } else goHome(scene);
+    } else { goHome(scene); scene.everSkipped = true; }
     return;
   }
   showToast(scene, night ? 'O AGAIN: SLEEP' : 'O AGAIN: SKIP');
@@ -1490,10 +1486,7 @@ function onPlayerDeath(scene) {
   if (scene.gameOver) return;
   scene.gameOver = true;
   scene.deathModal.statsText.setText(
-    'DAY ' + scene.daysSurvived + '\n' +
-    'PICK: ' + TIER_PICK_NAMES[scene.pick] + '\n' +
-    'SWORD: ' + TIER_SWORD_NAMES[scene.sword] + '\n' +
-    'FURNACES BUILT: ' + scene.furnaces.length,
+    'SCORE: ' + (scene.score || 0) + '\nDAYS: ' + scene.daysSurvived,
   );
   scene.deathModal.container.setVisible(true);
 }
@@ -1734,31 +1727,22 @@ function getSkyColor(scene) {
 }
 
 function buildHud(scene) {
-  scene.toolText = scene.add
-    .text(8, 6, 'TOOL: ' + TIER_PICK_NAMES[TIER_FIST], {
-      fontFamily: 'monospace', fontSize: '12px', color: '#ffe066', fontStyle: 'bold',
-    })
-    .setDepth(20);
+  // Stats backdrop + 5 stacked single-line readouts.
+  scene.add.rectangle(4, 4, 168, 74, 0x0a0d18, 0.7).setOrigin(0).setDepth(19);
+  const STATS = [
+    ['toolText',     6, '#ffe066'],
+    ['dayText',     20, '#a0c8ff'],
+    ['hpText',      34, '#ff6666'],
+    ['villagerText',48, '#a0e0a0'],
+    ['scoreText',   62, '#ffe066'],
+  ];
+  for (const [k, y, color] of STATS) {
+    scene[k] = scene.add.text(8, y, '', {
+      fontFamily: 'monospace', fontSize: '11px', color,
+    }).setDepth(20);
+  }
 
-  scene.dayText = scene.add
-    .text(8, 22, '', {
-      fontFamily: 'monospace', fontSize: '11px', color: '#a0c8ff',
-    })
-    .setDepth(20);
-
-  scene.hpText = scene.add
-    .text(8, 37, '', {
-      fontFamily: 'monospace', fontSize: '12px', color: '#ff6666', fontStyle: 'bold',
-    })
-    .setDepth(20);
-
-  scene.villagerText = scene.add
-    .text(8, 52, 'VILLAGERS: 0', {
-      fontFamily: 'monospace', fontSize: '11px', color: '#a0e0a0',
-    })
-    .setDepth(20);
-
-  scene.invHud = { container: scene.add.container(8, 70).setDepth(20), rows: [] };
+  scene.invHud = { container: scene.add.container(8, 80).setDepth(20), rows: [] };
 
   scene.toastText = scene.add
     .text(GAME_WIDTH / 2, GAME_HEIGHT / 3, '', {
@@ -1845,13 +1829,15 @@ function buildTitleUi(scene) {
 // ----- Tutorial banner -----
 
 function buildTutorialUi(scene) {
-  const c = scene.add.container(GAME_WIDTH / 2, 60).setDepth(30);
+  // Compact banner near the top, narrow enough to leave the left-column
+  // stats visible.
+  const c = scene.add.container(GAME_WIDTH / 2, 18).setDepth(30);
   c.setVisible(false);
-  const bg = scene.add.rectangle(0, 0, 740, 90, 0x0a0d18, 0.88).setOrigin(0.5);
-  bg.setStrokeStyle(3, 0xffe066);
+  const bg = scene.add.rectangle(0, 0, 460, 26, 0x0a0d18, 0.88).setOrigin(0.5);
+  bg.setStrokeStyle(2, 0xffe066);
   const text = scene.add.text(0, 0, '', {
-    fontFamily: 'monospace', fontSize: '15px', color: '#ffe066',
-    fontStyle: 'bold', align: 'center', lineSpacing: 4,
+    fontFamily: 'monospace', fontSize: '11px', color: '#ffe066',
+    fontStyle: 'bold', align: 'center', lineSpacing: 2,
   }).setOrigin(0.5);
   c.add(bg);
   c.add(text);
@@ -1864,8 +1850,16 @@ function setTutorialStep(scene, step) {
   const txt = TUTORIAL_STEPS[step];
   if (txt) {
     scene.tutorialText.setText(txt);
-    scene.tutorialContainer.setVisible(true);
-    if (step === 4) {
+    const c = scene.tutorialContainer;
+    c.setVisible(true);
+    // Pop big & centered, then shrink up after 2s so it doesn't block stats.
+    c.setScale(1.7); c.y = 70;
+    scene.tweens.killTweensOf(c);
+    scene.tweens.add({
+      targets: c, scaleX: 1, scaleY: 1, y: 18,
+      duration: 350, delay: 2000, ease: 'Quad.easeIn',
+    });
+    if (step === TUTORIAL_FINAL_STEP) {
       scene.tutorial.finalDismissTick = scene.tickCount + TUTORIAL_FINAL_HOLD_TICKS;
     }
   } else {
@@ -1876,11 +1870,18 @@ function setTutorialStep(scene, step) {
 function tickTutorial(scene) {
   const t = scene.tutorial;
   if (t.step === 0 || t.step >= TUTORIAL_STEPS.length - 1) return;
-  if (t.step === 1 && scene.inventory[WOOD] >= 1) { setTutorialStep(scene, 2); return; }
-  if (t.step === 2 && scene.inventory[WOOD] >= 10) { setTutorialStep(scene, 3); return; }
+  const inv = scene.inventory;
+  if (t.step === 1 && inv[WOOD] >= 1) { setTutorialStep(scene, 2); return; }
+  if (t.step === 2 && inv[WOOD] >= 10) { setTutorialStep(scene, 3); return; }
   if (t.step === 3 && scene.pick >= TIER_WOOD) { setTutorialStep(scene, 4); return; }
-  if (t.step === 4 && scene.tickCount >= t.finalDismissTick) {
-    setTutorialStep(scene, 5);
+  if (t.step === 4 && scene.basePlaced) { setTutorialStep(scene, 5); return; }
+  if (t.step === 5 && scene.bedPlaced) { setTutorialStep(scene, 6); return; }
+  if (t.step === 6 && scene.everSkipped) { setTutorialStep(scene, 7); return; }
+  if (t.step === 7 && scene.everSlept) { setTutorialStep(scene, 8); return; }
+  if (t.step === 8 && scene.smeltedAny) { setTutorialStep(scene, 9); return; }
+  if (t.step === 9 && scene.villagerCount >= 1) { setTutorialStep(scene, 10); return; }
+  if (t.step === TUTORIAL_FINAL_STEP && scene.tickCount >= t.finalDismissTick) {
+    setTutorialStep(scene, TUTORIAL_FINAL_STEP + 1);
   }
 }
 
@@ -1967,7 +1968,8 @@ function showToast(scene, text) {
 
 // ----- Build menu -----
 
-const BUILD_MENU_ROW_COUNT = 13; // accommodates BUILDING_RECIPES (biggest tab)
+const BUILD_MENU_ROW_COUNT = 15;
+const BUILD_MENU_ROW_STEP = 18;
 
 function getCurrentRecipes(scene) {
   return scene.buildMenu.tab === 'tools' ? TOOL_RECIPES : BUILDING_RECIPES;
@@ -2032,7 +2034,7 @@ function buildBuildMenuUi(scene) {
   scene.buildMenuContainer = c;
 
   c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.75));
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 460, 430, 0x1a2238).setStrokeStyle(2, 0xffe066));
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 460, 470, 0x1a2238).setStrokeStyle(2, 0xffe066));
 
   c.add(
     scene.add.text(GAME_WIDTH / 2, 108, 'BUILD', {
@@ -2055,13 +2057,13 @@ function buildBuildMenuUi(scene) {
   c.add(scene.buildMenuTabs.tools);
   c.add(scene.buildMenuTabs.buildings);
 
-  // 11 row slots — accommodates BUILDING_RECIPES (biggest tab). Unused
-  // rows hidden when on TOOLS tab.
+  // Row slots accommodate the largest tab (buildings). Tighter step so
+  // all 15 recipes fit. Unused rows hidden when on TOOLS tab.
   scene.buildMenuRows = [];
   for (let i = 0; i < BUILD_MENU_ROW_COUNT; i++) {
     const row = {};
-    const y = 165 + i * 20;
-    row.bg = scene.add.rectangle(GAME_WIDTH / 2, y, 420, 18, 0x2a3555, 0).setOrigin(0.5);
+    const y = 165 + i * BUILD_MENU_ROW_STEP;
+    row.bg = scene.add.rectangle(GAME_WIDTH / 2, y, 420, BUILD_MENU_ROW_STEP - 2, 0x2a3555, 0).setOrigin(0.5);
     row.text = scene.add.text(GAME_WIDTH / 2 - 195, y, '', {
       fontFamily: 'monospace', fontSize: '11px', color: '#ffffff',
     }).setOrigin(0, 0.5);
@@ -2073,7 +2075,7 @@ function buildBuildMenuUi(scene) {
   }
 
   c.add(
-    scene.add.text(GAME_WIDTH / 2, 445,
+    scene.add.text(GAME_WIDTH / 2, 460,
       'UP/DOWN PICK   L/R TAB   U CONFIRM   I CLOSE', {
       fontFamily: 'monospace', fontSize: '10px', color: '#a0a8b0',
     }).setOrigin(0.5),
@@ -2436,7 +2438,9 @@ function attemptPlacement(scene) {
   if (recipe.kind === 'base') {
     scene.home.x = (p_.tx + p_.w / 2) * TILE;
     scene.home.y = p_.ty * TILE;
+    scene.basePlaced = true;
   }
+  if (recipe.kind === 'bed') scene.bedPlaced = true;
 
   scene.invDirty = true;
   scene.dirtyMineral = true;
@@ -2482,6 +2486,7 @@ function tickFurnaces(scene) {
     if (f.smeltIdx >= 0 && ++f.smeltProgress >= SMELT_TIME_TICKS) {
       f.output[f.smeltIdx]++;
       f.smeltIdx = -1;
+      scene.smeltedAny = true;
     }
 
     if (!nearFurnace(scene, f)) continue;
@@ -2942,8 +2947,14 @@ function scanVillages(scene) {
         const n = nbrs[k];
         if (visited[n] === tag) continue;
         const nt = w[n] & TYPE_MASK;
-        if (nt === AIR) { visited[n] = tag; if (qt < queue.length) queue[qt++] = n; }
-        else if (nt === BED_WOOD || nt === BED_IRON) { visited[n] = tag; beds.push(n, nt); }
+        const ncat = BLOCK_CAT[nt];
+        // AIR + decor (leaves/clouds) propagate the flood — they don't
+        // seal the room (so trees/clouds over an open base don't make
+        // it look enclosed).
+        if (ncat === CAT_AIR || ncat === CAT_DECOR) {
+          visited[n] = tag;
+          if (qt < queue.length) queue[qt++] = n;
+        } else if (nt === BED_WOOD || nt === BED_IRON) { visited[n] = tag; beds.push(n, nt); }
         else if (isStructuralTile(w[n])) builtWalls++;
       }
     }
