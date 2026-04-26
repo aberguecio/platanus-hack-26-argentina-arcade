@@ -64,11 +64,13 @@ const AIR = 0, DIRT = 1, SAND = 2, WATER = 3, STONE = 4,
       // special pass-through semantics (see isSolidForPlayer/Monster).
       BRICK_DIRT = 17, BRICK_STONE = 18, BRICK_COPPER = 19, BRICK_IRON = 20,
       DOOR_WOOD = 21, STAIR_WOOD = 22,
-      BED_WOOD = 23, BED_IRON = 24,
+      BED_WOOD = 23,
       OBSIDIAN = 25,
       HARD_ROCK = 26, // deep base layer, 2× stone hardness
       MITHRIL = 27,   // end-game tool material, deepest vein
-      MITHRIL_INGOT = 28;
+      MITHRIL_INGOT = 28,
+      DOOR_IRON = 29,
+      BED_COPPER = 30;
 
 // Per-block flags. Drive procedural recipe generation and the
 // render-time texture pattern (brick edge / vein inset square).
@@ -86,45 +88,51 @@ const F_IS_MINERAL = 16;  // smeltable in furnace (raw → MAT_TO_INGOT[id])
 // + brick, auto-generates BASE/WALL recipes (10 mat per tile). Adding
 // mithril = one row here + one BRICK_MITHRIL row + tier:5/brick set.
 const BLOCKS = [
-  // id, name, cat, color, fallTicks, hardness, flags, [tier], [brick]
-  { id: AIR,    name: 'air',    cat: CAT_AIR,      color: 0xff0a0d18, fallTicks: 0,  hardness: 0,  flags: 0 },
+  // KEEP MATERIAL ORDER: BUILDING_RECIPES + TOOL_RECIPES come out in the
+  // order materials appear here (dirt → wood → stone → copper → iron →
+  // obsidian → mithril). Reorder these rows to reorder the menu tabs.
+  { id: AIR,    name: 'air',    cat: CAT_AIR,      color: 0xff0a0d18 },
   { id: DIRT,   name: 'dirt',   cat: CAT_SOLID,    color: 0xff2c4f7a, fallTicks: 15, hardness: 10, flags: F_FOR_BUILD, brick: BRICK_DIRT },
-  { id: SAND,   name: 'sand',   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 12, hardness: 10, flags: 0 },
-  { id: WATER,  name: 'water',  cat: CAT_LIQUID,   color: 0xffd88030, fallTicks: 5,  hardness: 10, flags: 0 },
-  { id: STONE,  name: 'stone',  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 15, hardness: 20, flags: F_FOR_TOOL | F_FOR_BUILD, tier: 2, brick: BRICK_STONE },
-  { id: LAVA,   name: 'lava',   cat: CAT_LIQUID,   color: 0xff1840f0, fallTicks: 30, hardness: 50, flags: 0 },
-  { id: COPPER, name: 'copper', cat: CAT_MINERAL,  color: 0xff3070c0, fallTicks: 20, hardness: 40, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_VEIN | F_IS_MINERAL, tier: 3, brick: BRICK_COPPER },
-  { id: IRON,   name: 'iron',   cat: CAT_MINERAL,  color: 0xff8090a0, fallTicks: 20, hardness: 80, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_VEIN | F_IS_MINERAL, tier: 4, brick: BRICK_IRON },
-  { id: BORDER, name: 'border', cat: CAT_MAGIC,    color: 0xff1a1a1a, fallTicks: 0,  hardness: 0,  flags: 0 },
-  { id: WOOD,         name: 'wood',         cat: CAT_SOLID, color: 0xff1d3a6e, fallTicks: 15, hardness: 4,  flags: F_FOR_TOOL, tier: 1 },
-  { id: COPPER_INGOT, name: 'copper ingot', cat: CAT_AIR,   color: 0xff3a80d0, fallTicks: 0,  hardness: 0,  flags: 0 },
-  { id: IRON_INGOT,   name: 'iron ingot',   cat: CAT_AIR,   color: 0xffc8d4de, fallTicks: 0,  hardness: 0,  flags: 0 },
-  { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC, color: 0xff3a3a40, fallTicks: 0,  hardness: 200, flags: 0, drop: STONE, dropAmt: 40 },
-  { id: LEAVES,       name: 'leaves',       cat: CAT_DECOR, color: 0xff4aa040, fallTicks: 0,  hardness: 0,  flags: 0 },
-  { id: CLOUD,        name: 'cloud',        cat: CAT_DECOR, color: 0xffe8eef0, fallTicks: 0,  hardness: 0,  flags: 0 },
-  // Bricks: F_IS_BRICK drives outlined-edge texture. Hardness equals raw mat —
-  // a wall costs 10× to build but breaks like 1× of the raw block. Drop = 1.
-  { id: BRICK_DIRT,   name: 'dirt brick',   cat: CAT_MAGIC, color: 0xff3a5880, fallTicks: 0, hardness: 10, flags: F_IS_BRICK },
-  { id: BRICK_STONE,  name: 'stone brick',  cat: CAT_MAGIC, color: 0xff8a8a90, fallTicks: 0, hardness: 20, flags: F_IS_BRICK },
-  { id: BRICK_COPPER, name: 'copper brick', cat: CAT_MAGIC, color: 0xff4080c8, fallTicks: 0, hardness: 40, flags: F_IS_BRICK },
-  { id: BRICK_IRON,   name: 'iron brick',   cat: CAT_MAGIC, color: 0xff708090, fallTicks: 0, hardness: 80, flags: F_IS_BRICK },
-  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC, color: 0xff2a5088, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
-  { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC, color: 0xff3478b0, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
-  { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC, color: 0xff4050c0, fallTicks: 0, hardness: 4,  flags: 0, drop: WOOD,       dropAmt: 1 },
-  { id: BED_IRON,     name: 'iron bed',     cat: CAT_MAGIC, color: 0xff606890, fallTicks: 0, hardness: 80, flags: 0, drop: IRON_INGOT, dropAmt: 1 },
-  { id: OBSIDIAN,     name: 'obsidian',     cat: CAT_MAGIC, color: 0xff40182a, fallTicks: 0, hardness: 160, flags: F_FOR_BUILD | F_IS_BRICK, brick: OBSIDIAN },
+  { id: WOOD,   name: 'wood',   cat: CAT_SOLID,    color: 0xff1d3a6e, fallTicks: 15, hardness: 4,  flags: F_FOR_TOOL, tier: 1, bed: BED_WOOD, door: DOOR_WOOD, doorCost: 10, extra: { name: 'STAIR', kind: 'stair', material: WOOD, tile: STAIR_WOOD, costPerTile: 10 } },
+  { id: SAND,   name: 'sand',   cat: CAT_SANDLIKE, color: 0xff5cd4e8, fallTicks: 12, hardness: 10 },
+  { id: WATER,  name: 'water',  cat: CAT_LIQUID,   color: 0xffd88030, fallTicks: 5,  hardness: 10 },
+  { id: STONE,  name: 'stone',  cat: CAT_MINERAL,  color: 0xff4a4a4a, fallTicks: 15, hardness: 20, flags: F_FOR_TOOL | F_FOR_BUILD, tier: 2, brick: BRICK_STONE, extra: { name: 'FURNACE', kind: 'furnace', material: STONE, tile: FURNACE, costTotal: 50 } },
+  { id: LAVA,   name: 'lava',   cat: CAT_LIQUID,   color: 0xff1840f0, fallTicks: 30, hardness: 50 },
+  { id: COPPER,       name: 'copper',       cat: CAT_MINERAL, color: 0xff3070c0, fallTicks: 20, hardness: 40, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_VEIN | F_IS_MINERAL, tier: 3, brick: BRICK_COPPER },
+  { id: COPPER_INGOT, name: 'copper ingot', cat: CAT_AIR,     color: 0xff3a80d0, bed: BED_COPPER, armor: 1 },
+  { id: IRON,         name: 'iron',         cat: CAT_MINERAL, color: 0xff8090a0, fallTicks: 20, hardness: 80, flags: F_FOR_TOOL | F_FOR_BUILD | F_IS_VEIN | F_IS_MINERAL, tier: 4, brick: BRICK_IRON },
+  { id: IRON_INGOT,   name: 'iron ingot',   cat: CAT_AIR,     color: 0xffc8d4de, door: DOOR_IRON, doorCost: 50, armor: 2 },
+  { id: BORDER,       name: 'border',       cat: CAT_MAGIC,   color: 0xff1a1a1a },
+  { id: FURNACE,      name: 'furnace',      cat: CAT_MAGIC,   color: 0xff3a3a40, hardness: 200, drop: STONE, dropAmt: 40 },
+  { id: LEAVES,       name: 'leaves',       cat: CAT_DECOR,   color: 0xff4aa040 },
+  { id: CLOUD,        name: 'cloud',        cat: CAT_DECOR,   color: 0xffe8eef0 },
+  // Bricks generated below from a small table — F_IS_BRICK drives outlined
+  // edge; hardness equals the raw mat; drop = 1 of the smelted form.
+  { id: DOOR_WOOD,    name: 'door',         cat: CAT_MAGIC, color: 0xff2a5088, hardness: 4,  drop: WOOD       },
+  { id: DOOR_IRON,    name: 'iron door',    cat: CAT_MAGIC, color: 0xff708090, hardness: 80, drop: IRON_INGOT },
+  { id: STAIR_WOOD,   name: 'stair',        cat: CAT_MAGIC, color: 0xff3478b0, hardness: 4,  drop: WOOD       },
+  { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC, color: 0xff4050c0, hardness: 4,  drop: WOOD         },
+  { id: BED_COPPER,   name: 'copper bed',   cat: CAT_MAGIC, color: 0xff8060d0, hardness: 40, drop: COPPER_INGOT },
+  { id: OBSIDIAN,     name: 'obsidian',     cat: CAT_MAGIC, color: 0xff40182a, hardness: 160, flags: F_FOR_BUILD | F_IS_BRICK, brick: OBSIDIAN },
   // Hard rock: 2× stone hardness, the deep-world base layer below stone.
-  { id: HARD_ROCK,    name: 'hard rock',    cat: CAT_MINERAL, color: 0xff353038, fallTicks: 15, hardness: 40, flags: 0 },
+  { id: HARD_ROCK,    name: 'hard rock',    cat: CAT_MINERAL, color: 0xff353038, fallTicks: 15, hardness: 40 },
   { id: MITHRIL,      name: 'mithril',      cat: CAT_MINERAL, color: 0xffd0c8a8, fallTicks: 20, hardness: 160, flags: F_FOR_TOOL | F_IS_VEIN | F_IS_MINERAL, tier: 5 },
-  { id: MITHRIL_INGOT,name: 'mithril ingot',cat: CAT_AIR,     color: 0xffe0e8f0, fallTicks: 0,  hardness: 0,   flags: 0 },
+  { id: MITHRIL_INGOT,name: 'mithril ingot',cat: CAT_AIR,     color: 0xffe0e8f0, armor: 3 },
 ];
+// Generate the 4 brick rows from a compact table (id, raw-mat name, color, hardness).
+for (const [id, n, color, hardness] of [
+  [BRICK_DIRT,   'dirt',   0xff3a5880, 10],
+  [BRICK_STONE,  'stone',  0xff8a8a90, 20],
+  [BRICK_COPPER, 'copper', 0xff4080c8, 40],
+  [BRICK_IRON,   'iron',   0xff708090, 80],
+]) BLOCKS.push({ id, name: n + ' brick', cat: CAT_MAGIC, color, hardness, flags: F_IS_BRICK });
 
 // raw mat → smelted equivalent (brick drops + tool tier costs + furnace).
 const MAT_TO_INGOT = { [DIRT]: DIRT, [STONE]: STONE, [COPPER]: COPPER_INGOT, [IRON]: IRON_INGOT, [MITHRIL]: MITHRIL_INGOT };
 // Parallel arrays of smeltable ores → their ingot. Filled from BLOCKS.
 const ORE_RAWS = [], ORE_INGOTS = [];
-// brick id → its raw material. Drops 10× of MAT_TO_INGOT[mat].
-const BRICK_MAT = { [BRICK_DIRT]: DIRT, [BRICK_STONE]: STONE, [BRICK_COPPER]: COPPER, [BRICK_IRON]: IRON };
+// brick id → its raw material. Built in the setup loop from `b.brick`.
+const BRICK_MAT = {};
 
 // Flat lookup tables for the hot path. 64-slot capacity (TYPE_MASK + 1).
 const BLOCK_CAT = new Uint8Array(64);
@@ -141,14 +149,12 @@ for (const b of BLOCKS) {
   BLOCK_FALL_TICKS[b.id] = b.fallTicks;
   BLOCK_HARDNESS[b.id] = b.hardness;
   BLOCK_FLAGS[b.id] = b.flags;
-  // bricks drop 1 of their raw mat's smelted form (you paid 10 to build, get 1 back)
-  if (b.flags & F_IS_BRICK) {
-    BLOCK_DROP_TYPE[b.id] = MAT_TO_INGOT[BRICK_MAT[b.id]];
-    BLOCK_DROP_AMOUNT[b.id] = 1;
-  } else {
-    BLOCK_DROP_TYPE[b.id] = b.drop != null ? b.drop : b.id;
-    BLOCK_DROP_AMOUNT[b.id] = b.dropAmt != null ? b.dropAmt : 1;
-  }
+  // Materials list their brick id; build the inverse map for brick drops.
+  if (b.brick) BRICK_MAT[b.brick] = b.id;
+  // Bricks drop 1 of their raw mat's smelted form. Default amount = 1.
+  if (b.flags & F_IS_BRICK) BLOCK_DROP_TYPE[b.id] = MAT_TO_INGOT[BRICK_MAT[b.id]];
+  else                      BLOCK_DROP_TYPE[b.id] = b.drop != null ? b.drop : b.id;
+  BLOCK_DROP_AMOUNT[b.id] = b.dropAmt != null ? b.dropAmt : 1;
   BLOCK_NAME[b.id] = b.name;
   if (b.flags & F_IS_MINERAL) { ORE_RAWS.push(b.id); ORE_INGOTS.push(MAT_TO_INGOT[b.id]); }
 }
@@ -159,21 +165,22 @@ for (const b of BLOCKS) {
 const TIER_FIST = 0, TIER_WOOD = 1;
 const TIER_DAMAGE = [2, 7, 15, 30, 50, 80];
 const TIER_NAMES = ['FISTS', 'WOODEN', 'STONE', 'COPPER', 'IRON', 'MITHRIL'];
-const TIER_PICK_NAMES  = TIER_NAMES.map((n, i) => i === 0 ? 'FISTS' : n + ' PICKAXE');
-const TIER_SWORD_NAMES = TIER_NAMES.map((n, i) => i === 0 ? 'FISTS' : n + ' SWORD');
+// Armor tiers (1=copper, 2=iron, 3=mithril) add to PLAYER_MAX_HP.
+const ARMOR_BONUS = [0, 4, 8, 14];
+const ARMOR_NAMES = ['NONE', 'COPPER', 'IRON', 'MITHRIL'];
+const _AZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const C_Y = '#ffe066', C_G = '#7a7a82', C_B = '#a0c8ff', C_R = '#ff6666', C_M = '#a0a8b0';
+const TIER_PICK_NAMES  = TIER_NAMES.map(n => n === 'FISTS' ? n : n + ' PICKAXE');
+const TIER_SWORD_NAMES = TIER_NAMES.map(n => n === 'FISTS' ? n : n + ' SWORD');
 
 // Tool + base/wall recipes are derived from BLOCKS.flags + .tier + .brick.
 // Tools cost 10 of mat for tier 1 (wood — easy to start) and 100 for the
 // rest. F_IS_MINERAL materials consume their smelted ingot.
 const TOOL_RECIPES = [];
-// Wood-cost builds first — these are what a new player can craft right
-// after the wooden pickaxe. Then BASE/WALL by tier (dirt → obsidian).
-// Advanced singletons (need stone/iron) at the end.
-const BUILDING_RECIPES = [
-  { name: 'DOOR',  kind: 'door',  material: WOOD, tile: DOOR_WOOD,  costTotal: 10 },
-  { name: 'STAIR', kind: 'stair', material: WOOD, tile: STAIR_WOOD, costPerTile: 10 },
-  { name: 'BED',   kind: 'bed',   material: WOOD, tile: BED_WOOD,   costTotal: 10 },
-];
+// All building recipes are derived from BLOCKS — bed/door from material
+// fields, brick BASE/WALL from F_FOR_BUILD + brick, and singletons (stair,
+// furnace) from a per-material `extra` recipe.
+const BUILDING_RECIPES = [];
 for (const b of BLOCKS) {
   const matId = MAT_TO_INGOT[b.id] || b.id;
   const NAME = b.name.toUpperCase();
@@ -182,18 +189,16 @@ for (const b of BLOCKS) {
     TOOL_RECIPES.push({ name: TIER_PICK_NAMES[b.tier],  cost, pickTier:  b.tier });
     TOOL_RECIPES.push({ name: TIER_SWORD_NAMES[b.tier], cost, swordTier: b.tier });
   }
+  if (b.armor) TOOL_RECIPES.push({ name: ARMOR_NAMES[b.armor] + ' ARMOR', cost: [[b.id, 50]], armorTier: b.armor });
   if ((b.flags & F_FOR_BUILD) && b.brick) {
     BUILDING_RECIPES.push({ name: 'BASE ' + NAME, kind: 'base', material: matId, tile: b.brick, costPerTile: 10 });
     BUILDING_RECIPES.push({ name: 'WALL ' + NAME, kind: 'wall', material: matId, tile: b.brick, costPerTile: 10 });
   }
+  if (b.bed) BUILDING_RECIPES.push({ name: NAME + ' BED', kind: 'bed', material: b.id, tile: b.bed, costTotal: 10 });
+  if (b.door) BUILDING_RECIPES.push({ name: NAME + ' DOOR', kind: 'door', material: b.id, tile: b.door, costTotal: b.doorCost });
+  if (b.extra) BUILDING_RECIPES.push(b.extra);
 }
-// BLOCKS lists wood after the minerals, so the tool loop produces them
-// out of progression order. Sort by tier so wooden tools come first.
-TOOL_RECIPES.sort((a, b) => (a.pickTier || a.swordTier) - (b.pickTier || b.swordTier));
-BUILDING_RECIPES.push(
-  { name: 'FURNACE', kind: 'furnace', material: STONE,      tile: FURNACE,  costTotal: 50 },
-  { name: 'IRON BED',kind: 'bed',     material: IRON_INGOT, tile: BED_IRON, costTotal: 10 },
-);
+// TOOL_RECIPES already comes out tier-ordered from BLOCKS; no sort needed.
 
 // Per-kind defaults for the placement mode. `resize` says which axis
 // grows with U/D; null means fixed size.
@@ -279,27 +284,26 @@ const STUCK_THRESHOLD_TICKS = 30;
 const STUCK_JUMP_VELOCITY = -5.0; // peak ≈ 6.9 tiles, clears most walls
 
 // Per-type stats stored as parallel typed arrays. Adding a monster =
-// one row in each table + one case in buildMonsterVisual. AI: 0=ground,
-// 1=glide. jumpTrigger: 0=none, 1=timer, 2=blocked. Flags: bitmask of
-// MF_GRAVITY|MF_PHASE|MF_KNOCK|MF_ATK_TILES|MF_EXPLODES.
-const MF_GRAVITY = 1, MF_PHASE = 2, MF_KNOCK = 4, MF_ATK_TILES = 8, MF_EXPLODES = 16;
+// one row in each table + one case in buildMonsterVisual.
+// Flags: bitmask of behavior bits below. The AI mode (glide vs ground)
+// and the jump trigger (timer vs blocked) live in the same bitmask.
+const MF_GRAVITY = 1, MF_PHASE = 2, MF_KNOCK = 4, MF_ATK_TILES = 8,
+      MF_EXPLODES = 16, MF_GLIDE = 32, MF_JUMP_TIMER = 64, MF_JUMP_BLOCKED = 128;
 //                                       SLIME ZOMBIE FLYER GHOST BOMBER
 const M_W        = new Uint8Array([        12,   12,   14,   12,   12]);
 const M_H        = new Uint8Array([         8,   22,    8,   14,   14]);
 const M_HP       = new Uint8Array([        25,   45,   25,   22,   35]);
-const M_AI       = new Uint8Array([         0,    0,    1,    1,    0]);
 const M_FLAGS    = new Uint8Array([
-  MF_GRAVITY|MF_KNOCK|MF_ATK_TILES,
-  MF_GRAVITY|MF_KNOCK|MF_ATK_TILES,
-  MF_KNOCK|MF_ATK_TILES,
-  MF_PHASE,
-  MF_GRAVITY|MF_KNOCK|MF_EXPLODES,
+  MF_GRAVITY|MF_KNOCK|MF_ATK_TILES|MF_JUMP_TIMER,            // SLIME
+  MF_GRAVITY|MF_KNOCK|MF_ATK_TILES|MF_JUMP_BLOCKED,          // ZOMBIE
+  MF_KNOCK|MF_ATK_TILES|MF_GLIDE,                            // FLYER
+  MF_PHASE|MF_GLIDE,                                         // GHOST
+  MF_GRAVITY|MF_KNOCK|MF_EXPLODES|MF_JUMP_BLOCKED,           // BOMBER
 ]);
 const M_WALK     = [0,    0.6,  0,    0,    0.4];
 const M_AIR      = [1.2,  0.6,  0,    0,    0.4];
 const M_GLIDE    = [0,    0,    0.8,  0.55, 0];
 const M_JUMP_V   = [-3.5, -4.2, 0,    0,    -4.0];
-const M_JUMP_TR  = new Uint8Array([1, 2, 0, 0, 2]);
 const M_JUMP_MIN = new Uint8Array([30, 0, 0, 0, 0]);
 const M_JUMP_MAX = new Uint8Array([60, 0, 0, 0, 0]);
 const M_ATK_DMG  = new Uint8Array([3, 5, 3, 0, 0]);
@@ -410,6 +414,9 @@ function create() {
 
   // Mineral stability scratch space.
   scene.bfsQueue = new Int32Array(VW * VH + 16);
+  // Bigger scratch queue for scanVillages (covers the whole map). Allocate
+  // once to avoid a 500KB+ GC pause every dawn.
+  scene.bigBfsQueue = new Int32Array(WORLD_W * WORLD_H);
   scene.visited = new Uint8Array(WORLD_W * WORLD_H);
   scene.visitedTag = 0;
   scene.dirtyMineral = true; // run BFS on first tick
@@ -436,6 +443,7 @@ function create() {
   scene.discovered = new Uint8Array(64);
   scene.pick = TIER_FIST;
   scene.sword = TIER_FIST;
+  scene.armor = 0;
   scene.invDirty = true;
   scene.furnaces = [];
   scene.buildMenu = { open: false, tab: 'tools', cursor: 0 };
@@ -453,8 +461,8 @@ function create() {
   recomputeDayLengths(scene);
 
   // Health + hazard counters (attached to player for clean grouping).
-  scene.player.hp = PLAYER_MAX_HP;
-  scene.player.maxHp = PLAYER_MAX_HP;
+  scene.player.maxHp = PLAYER_MAX_HP + ARMOR_BONUS[scene.armor];
+  scene.player.hp = scene.player.maxHp;
   scene.player.submergedTicks = 0;
   scene.player.lavaTicks = 0;
   scene.player.peakY = scene.player.y;
@@ -462,6 +470,13 @@ function create() {
   scene.player.invulnTicks = 0;
   scene.player.wasInWater = false;
   scene.gameOver = false;
+
+  // Highscores (top 5, name 3 letters). Loaded async on boot.
+  scene.highscores = [];
+  const _ps = window.platanusArcadeStorage;
+  if (_ps) _ps.get('hs').then(r => {
+    if (r.found) scene.highscores = r.value.slice(0, 5);
+  });
 
   // Web Audio context for procedural SFX + music. May be suspended
   // until a user gesture; we resume in startMusic / sfx.
@@ -571,16 +586,14 @@ function plantTree(w, rnd, tx) {
     if ((w[idx] & TYPE_MASK) !== AIR) { topY = y + 1; break; }
     w[idx] = WOOD;
   }
-  // Canopy of LEAVES: 5-wide rounded blob at the top of the trunk.
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -2; dx <= 2; dx++) {
-      if (Math.abs(dx) === 2 && dy !== 0) continue; // round corners
-      const cx = tx + dx;
-      const cy = topY + dy;
-      if (cx < 1 || cx >= WORLD_W - 1 || cy < 1) continue;
-      const idx = cy * WORLD_W + cx;
-      if ((w[idx] & TYPE_MASK) === AIR) w[idx] = LEAVES;
-    }
+  // Canopy: 5-wide rounded blob at trunk top, table-driven [dy,dx].
+  const CANOPY = [-1,-1, -1,0, -1,1, 0,-2, 0,-1, 0,0, 0,1, 0,2, 1,-1, 1,0, 1,1];
+  for (let i = 0; i < CANOPY.length; i += 2) {
+    const cx = tx + CANOPY[i + 1];
+    const cy = topY + CANOPY[i];
+    if (cx < 1 || cx >= WORLD_W - 1 || cy < 1) continue;
+    const idx = cy * WORLD_W + cx;
+    if ((w[idx] & TYPE_MASK) === AIR) w[idx] = LEAVES;
   }
   return true;
 }
@@ -654,7 +667,7 @@ function update(_time, delta) {
   }
   refreshDayTimer(scene);
   refreshHpHud(scene);
-  scene.toolText.setText('TOOL: ' + getActiveToolName(scene));
+  scene.toolText.setText('TOOL: ' + getActiveToolName(scene) + '  ARM: ' + ARMOR_NAMES[scene.armor]);
   scene.villagerText.setText('VILLAGERS: ' + scene.villagerCount);
   scene.scoreText.setText('SCORE: ' + (scene.score || 0));
 
@@ -754,8 +767,8 @@ function simulateViewport(scene) {
         let hit = -1;
         if ((w[idx - WORLD_W] & TYPE_MASK) === opp) hit = idx - WORLD_W;
         else if ((w[idx + WORLD_W] & TYPE_MASK) === opp) hit = idx + WORLD_W;
-        else if (x > 1 && (w[idx - 1] & TYPE_MASK) === opp) hit = idx - 1;
-        else if (x < WORLD_W - 1 && (w[idx + 1] & TYPE_MASK) === opp) hit = idx + 1;
+        else if ((w[idx - 1] & TYPE_MASK) === opp) hit = idx - 1;
+        else if ((w[idx + 1] & TYPE_MASK) === opp) hit = idx + 1;
         if (hit >= 0) {
           w[idx] = OBSIDIAN | MOVED_FLAG;
           w[hit] = OBSIDIAN | MOVED_FLAG;
@@ -825,8 +838,6 @@ function tryFall(scene, w, damage, idx, x, tick, t, fb) {
   if (fb & FB_DIAGONAL) {
     for (let dir = 0; dir < 2; dir++) {
       const dx = (dir === 0) ? bias : -bias;
-      const nx = x + dx;
-      if (nx < 1 || nx >= WORLD_W - 1) continue;
       if (BLOCK_CAT[w[dIdx + dx] & TYPE_MASK] === CAT_AIR) {
         w[dIdx + dx] = t | writeFlags; w[idx] = AIR; damage[idx] = 0;
         if (dirty) scene.dirtyMineral = true;
@@ -838,8 +849,6 @@ function tryFall(scene, w, damage, idx, x, tick, t, fb) {
   if (fb & FB_SIDEWAYS) {
     for (let dir = 0; dir < 2; dir++) {
       const dx = (dir === 0) ? bias : -bias;
-      const nx = x + dx;
-      if (nx < 1 || nx >= WORLD_W - 1) continue;
       if ((w[idx + dx] & TYPE_MASK) === AIR) {
         w[idx + dx] = t | writeFlags; w[idx] = AIR; damage[idx] = 0;
         return;
@@ -1017,8 +1026,31 @@ function handleInput(scene) {
     return;
   }
 
-  // Death modal: U restarts, everything else absorbed.
+  // Death modal: name entry first (if qualified), then U restarts.
   if (scene.gameOver) {
+    const ne = scene.nameEntry;
+    if (ne) {
+      let dirty = false;
+      const dh = (c.pressed.P1_R ? 1 : 0) - (c.pressed.P1_L ? 1 : 0);
+      if (dh) { c.pressed.P1_L = c.pressed.P1_R = false; ne.cursor = (ne.cursor + dh + 3) % 3; dirty = true; }
+      const dv = (c.pressed.P1_U ? 1 : 0) - (c.pressed.P1_D ? 1 : 0);
+      if (dv) { c.pressed.P1_U = c.pressed.P1_D = false; ne.letters[ne.cursor] = (ne.letters[ne.cursor] + dv + 26) % 26; dirty = true; }
+      if (c.pressed.P1_1) {
+        c.pressed.P1_1 = false;
+        const nm = _AZ[ne.letters[0]] + _AZ[ne.letters[1]] + _AZ[ne.letters[2]];
+        const hs = scene.highscores;
+        hs.push({ n: nm, s: scene.score || 0, d: scene.daysSurvived });
+        hs.sort((a, b) => b.s - a.s);
+        if (hs.length > 5) hs.length = 5;
+        const ps = window.platanusArcadeStorage;
+        if (ps) ps.set('hs', hs);
+        scene.nameEntry = null;
+        dirty = true;
+      }
+      if (dirty) refreshDeathModal(scene);
+      c.pressed.P1_2 = false; c.pressed.P1_3 = false;
+      return;
+    }
     if (c.pressed.P1_1) {
       c.pressed.P1_1 = false;
       scene.scene.restart();
@@ -1144,11 +1176,27 @@ function getActiveToolName(scene) {
     : TIER_PICK_NAMES[scene.pick];
 }
 
+// Accumulate `amt` damage on a tile and break it if past hardness. Shared
+// by tryMine (player) and monsterAttackTiles (monster chip-attacks).
+// Returns the original tile id if it broke this hit, else 0.
+function applyTileDamage(scene, idx, amt) {
+  const t = scene.world[idx] & TYPE_MASK;
+  const hard = BLOCK_HARDNESS[t];
+  if (hard === 0) return 0;
+  const d = Math.min(65535, scene.damage[idx] + amt);
+  if (d >= hard) {
+    scene.world[idx] = AIR;
+    scene.damage[idx] = 0;
+    scene.dirtyMineral = true;
+    return t;
+  }
+  scene.damage[idx] = d;
+  return 0;
+}
+
 function tryMine(scene, dx, dy) {
   if (!scene._mineBuf) scene._mineBuf = new Int32Array(8);
   const buf = scene._mineBuf;
-  const w = scene.world;
-  const damage = scene.damage;
   const n = getMineTargets(scene, dx, dy, buf);
 
   for (let i = 0; i < n; i += 2) {
@@ -1156,34 +1204,21 @@ function tryMine(scene, dx, dy) {
     const ty = buf[i + 1];
     if (tx < 1 || tx >= WORLD_W - 1 || ty < 1 || ty >= WORLD_H - 1) continue;
     const idx = ty * WORLD_W + tx;
-    const t = w[idx] & TYPE_MASK;
+    const t = scene.world[idx] & TYPE_MASK;
     if (BLOCK_CAT[t] === CAT_LIQUID) continue; // skip liquids, try next solid
-    const hard = BLOCK_HARDNESS[t];
-    if (hard === 0) continue; // AIR or unbreakable (MAGIC)
+    if (BLOCK_HARDNESS[t] === 0) continue; // AIR or unbreakable (MAGIC)
 
-    // Trigger swing animation regardless (player gets feedback).
-    scene.mineAnim = 14;
-    scene.mineDx = dx;
-    scene.mineDy = dy;
-
-    // Hardness is in damage units (same scale as TIER_DAMAGE). Day → use
-    // the player's pick; night → use their sword (auto-selected).
-    damage[idx] = Math.min(65535, damage[idx] + TIER_DAMAGE[getActiveTier(scene)]);
-    if (damage[idx] >= hard) {
-      w[idx] = AIR;
-      damage[idx] = 0;
-      scene.dirtyMineral = true;
-      // SFX by tile category: picota for minerals+structures, thud for
-      // solids, crunchy for sandlike, hacha for wood.
-      const cat = BLOCK_CAT[t];
-      if (t === WOOD)                                    sfx(scene, 'mineWood');
+    // Swing animation fires regardless of break/no-break.
+    scene.mineAnim = 14; scene.mineDx = dx; scene.mineDy = dy;
+    const broken = applyTileDamage(scene, idx, TIER_DAMAGE[getActiveTier(scene)]);
+    if (broken) {
+      const cat = BLOCK_CAT[broken];
+      if (broken === WOOD)                               sfx(scene, 'mineWood');
       else if (cat === CAT_MINERAL || cat === CAT_MAGIC) sfx(scene, 'mineMineral');
       else if (cat === CAT_SANDLIKE)                     sfx(scene, 'mineSand');
       else                                               sfx(scene, 'mineSolid');
-      // Drops are configured per block; bricks/doors/stairs return their
-      // original raw material × 10 instead of the placed tile itself.
-      const dropT = BLOCK_DROP_TYPE[t];
-      const dropN = BLOCK_DROP_AMOUNT[t];
+      const dropT = BLOCK_DROP_TYPE[broken];
+      const dropN = BLOCK_DROP_AMOUNT[broken];
       scene.inventory[dropT] = Math.min(65535, scene.inventory[dropT] + dropN);
       if (!scene.discovered[dropT]) {
         scene.discovered[dropT] = 1;
@@ -1307,43 +1342,44 @@ function movePlayer(scene) {
   }
 }
 
-// Player passes through doors + stairs + beds (beds + stairs feel like
-// furniture: you stand inside the tile).
-function isSolidForPlayer(cell) {
+// Passthrough bitmasks (bit i set = tile id i is non-solid for the actor).
+// Player passes through doors/stairs/beds/furnace; monster only stairs.
+const PT_PLAYER = (1 << DOOR_WOOD) | (1 << DOOR_IRON) | (1 << STAIR_WOOD) | (1 << BED_WOOD) | (1 << BED_COPPER) | (1 << FURNACE);
+const PT_MONSTER = 1 << STAIR_WOOD;
+
+function isSolid(cell, ptMask) {
   const t = cell & TYPE_MASK;
-  if (t === DOOR_WOOD || t === STAIR_WOOD ||
-      t === BED_WOOD || t === BED_IRON || t === FURNACE) return false;
+  if (ptMask & (1 << t)) return false;
   const cat = BLOCK_CAT[t];
   return cat !== CAT_AIR && cat !== CAT_LIQUID && cat !== CAT_DECOR;
 }
+const isSolidForPlayer  = c => isSolid(c, PT_PLAYER);
+const isSolidForMonster = c => isSolid(c, PT_MONSTER);
 
-// Monsters: doors + beds block them (shelter); stairs are passable (they
-// can't climb anyway).
-function isSolidForMonster(cell) {
-  const t = cell & TYPE_MASK;
-  if (t === STAIR_WOOD) return false;
-  const cat = BLOCK_CAT[t];
-  return cat !== CAT_AIR && cat !== CAT_LIQUID && cat !== CAT_DECOR;
-}
-
-// Returns the bed type (BED_WOOD / BED_IRON) overlapping the player, or 0.
-function playerOverlapsBed(scene) {
+// Iterate every world tile that overlaps entity `e`'s AABB. `fn(t, w, idx)`
+// is called per in-bounds tile; if it returns truthy, iteration stops and
+// the value is returned. Out-of-world cells are skipped (clamped).
+function forEachAABBTile(scene, e, fn) {
   const w = scene.world;
-  const p = scene.player;
-  const halfW = p.w / 2;
-  const x0 = ((p.x - halfW) / TILE) | 0;
-  const x1 = ((p.x + halfW - 0.001) / TILE) | 0;
-  const y0 = ((p.y - p.h) / TILE) | 0;
-  const y1 = ((p.y - 0.001) / TILE) | 0;
+  const halfW = e.w / 2;
+  const x0 = ((e.x - halfW) / TILE) | 0;
+  const x1 = ((e.x + halfW - 0.001) / TILE) | 0;
+  const y0 = ((e.y - e.h) / TILE) | 0;
+  const y1 = ((e.y - 0.001) / TILE) | 0;
   for (let y = y0; y <= y1; y++) {
     if (y < 0 || y >= WORLD_H) continue;
     for (let x = x0; x <= x1; x++) {
       if (x < 0 || x >= WORLD_W) continue;
-      const t = w[y * WORLD_W + x] & TYPE_MASK;
-      if (t === BED_WOOD || t === BED_IRON) return t;
+      const r = fn(w[y * WORLD_W + x] & TYPE_MASK, w, y * WORLD_W + x);
+      if (r) return r;
     }
   }
   return 0;
+}
+
+// Returns the bed type (BED_WOOD/BED_COPPER) if overlapped, else 0.
+function playerOverlapsBed(scene) {
+  return forEachAABBTile(scene, scene.player, t => (t === BED_WOOD || t === BED_COPPER) ? t : 0);
 }
 
 // Double-press O: first press prompts, second press within ~1s commits.
@@ -1351,87 +1387,54 @@ function handleOPress(scene) {
   const night = scene.nightActive;
   const bed = night ? playerOverlapsBed(scene) : 0;
   if (night ? (scene.sleptThisNight || !bed) : (scene.dayTime < scene.dayLengthTicks / 2))
-    return showToast(scene, night ? 'NO BED / SLEPT' : 'NOT TIRED');
+    return showToast(scene, night ? 'NO BED' : 'WAIT');
   const now = scene.tickCount | 0;
   if (scene.oArmed && now <= scene.oArmedUntil) {
     scene.oArmed = false;
     if (night) {
-      scene.nightTicksRemaining -= bed === BED_IRON ? (scene.nightLengthTicks / 2) | 0 : 30 * TICK_RATE;
+      scene.nightTicksRemaining -= bed === BED_COPPER ? (scene.nightLengthTicks / 2) | 0 : 30 * TICK_RATE;
       scene.sleptThisNight = true;
       scene.everSlept = true;
-      scene.home.x = scene.player.x; scene.home.y = scene.player.y;
       showToast(scene, 'ZZZ...');
     } else goHome(scene);
     return;
   }
-  showToast(scene, night ? 'O AGAIN: SLEEP' : 'O AGAIN: SKIP');
+  showToast(scene, night ? 'O: SLEEP' : 'O: SKIP');
   scene.oArmed = true;
   scene.oArmedUntil = now + TICK_RATE;
 }
 
 function playerOverlapsStair(scene) {
-  const w = scene.world;
-  const p = scene.player;
-  const halfW = p.w / 2;
-  const x0 = ((p.x - halfW) / TILE) | 0;
-  const x1 = ((p.x + halfW - 0.001) / TILE) | 0;
-  const y0 = ((p.y - p.h) / TILE) | 0;
-  const y1 = ((p.y - 0.001) / TILE) | 0;
-  for (let y = y0; y <= y1; y++) {
-    if (y < 0 || y >= WORLD_H) continue;
-    for (let x = x0; x <= x1; x++) {
-      if (x < 0 || x >= WORLD_W) continue;
-      if ((w[y * WORLD_W + x] & TYPE_MASK) === STAIR_WOOD) return true;
-    }
-  }
-  return false;
+  return !!forEachAABBTile(scene, scene.player, t => t === STAIR_WOOD);
 }
 
-// Returns the slowest (max) fallTicks of any liquid tile overlapping the
-// player AABB, or 0 if the player isn't in any liquid. Used to cap the
-// player's fall speed inside water (fast) vs. lava (slow).
+// Slowest (max) fallTicks of any liquid tile overlapping the player AABB.
 function playerLiquidFallTicks(scene) {
-  const w = scene.world;
-  const p = scene.player;
-  const halfW = p.w / 2;
-  const x0 = ((p.x - halfW) / TILE) | 0;
-  const x1 = ((p.x + halfW - 0.001) / TILE) | 0;
-  const y0 = ((p.y - p.h) / TILE) | 0;
-  const y1 = ((p.y - 0.001) / TILE) | 0;
   let maxFall = 0;
-  for (let y = y0; y <= y1; y++) {
-    if (y < 0 || y >= WORLD_H) continue;
-    for (let x = x0; x <= x1; x++) {
-      if (x < 0 || x >= WORLD_W) continue;
-      const t = w[y * WORLD_W + x] & TYPE_MASK;
-      if (BLOCK_CAT[t] === CAT_LIQUID) {
-        const ft = BLOCK_FALL_TICKS[t];
-        if (ft > maxFall) maxFall = ft;
-      }
+  forEachAABBTile(scene, scene.player, t => {
+    if (BLOCK_CAT[t] === CAT_LIQUID) {
+      const ft = BLOCK_FALL_TICKS[t];
+      if (ft > maxFall) maxFall = ft;
     }
-  }
+  });
   return maxFall;
 }
 
-// Richer liquid status: works for any entity with {x, y, w, h}.
-// Used by hazards (player + villagers), swim-jump, fall-damage cancel.
+// Richer liquid status for any entity {x, y, w, h}. Total = full AABB
+// span (computed from coords, includes out-of-world cells just like the
+// original); we only count water/lava among in-world cells.
 function liquidStatus(scene, e) {
-  const w = scene.world;
   const halfW = e.w / 2;
   const x0 = ((e.x - halfW) / TILE) | 0;
   const x1 = ((e.x + halfW - 0.001) / TILE) | 0;
   const y0 = ((e.y - e.h) / TILE) | 0;
   const y1 = ((e.y - 0.001) / TILE) | 0;
-  let waterCells = 0, lavaCells = 0, totalCells = 0;
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      totalCells++;
-      if (y < 0 || y >= WORLD_H || x < 0 || x >= WORLD_W) continue;
-      const t = w[y * WORLD_W + x] & TYPE_MASK;
-      if (t === WATER) waterCells++;
-      else if (t === LAVA) lavaCells++;
-    }
-  }
+  const totalCells = (x1 - x0 + 1) * (y1 - y0 + 1);
+  let waterCells = 0, lavaCells = 0;
+  forEachAABBTile(scene, e, t => {
+    if (t === WATER) waterCells++;
+    else if (t === LAVA) lavaCells++;
+  });
   return {
     fullyInWater: waterCells > 0 && waterCells === totalCells,
     touchingWater: waterCells > 0,
@@ -1485,10 +1488,36 @@ function applyPlayerDamage(scene, amt) {
 function onPlayerDeath(scene) {
   if (scene.gameOver) return;
   scene.gameOver = true;
-  scene.deathModal.statsText.setText(
-    'SCORE: ' + (scene.score || 0) + '\nDAYS: ' + scene.daysSurvived,
-  );
+  const sc = scene.score || 0;
+  const hs = scene.highscores;
+  if (hs.length < 5 || sc > hs[hs.length - 1].s) {
+    scene.nameEntry = { letters: [0, 0, 0], cursor: 0 };
+  }
+  refreshDeathModal(scene);
   scene.deathModal.container.setVisible(true);
+}
+
+function refreshDeathModal(scene) {
+  const ne = scene.nameEntry;
+  let t = 'SCORE: ' + (scene.score || 0) + '   DAYS: ' + scene.daysSurvived;
+  if (ne) {
+    let r = '';
+    for (let i = 0; i < 3; i++) {
+      const c = _AZ[ne.letters[i]];
+      r += i === ne.cursor ? '[' + c + ']' : ' ' + c + ' ';
+    }
+    t += '\n\nNEW HIGH!\n' + r + '\nL/R U/D OK';
+  } else {
+    const hs = scene.highscores;
+    if (hs.length) {
+      t += '\n\nTOP 5';
+      for (let i = 0; i < hs.length; i++) {
+        const e = hs[i];
+        t += '\n' + (i + 1) + '. ' + e.n + '  ' + e.s + '  D' + e.d;
+      }
+    }
+  }
+  scene.deathModal.statsText.setText(t);
 }
 
 // ============================================================
@@ -1726,15 +1755,27 @@ function getSkyColor(scene) {
   return (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
 }
 
+// Adds a full-screen dim + a centered box with stroke to container `c`.
+// Used by death modal and build menu.
+function addDimBox(scene, c, w, h, fill, stroke, dimAlpha) {
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, dimAlpha));
+  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, w, h, fill).setStrokeStyle(2, stroke));
+}
+
+// Center-anchored monospace text helper. `opts` extends the style object.
+function mkText(scene, x, y, s, sz, col, opts) {
+  return scene.add.text(x, y, s, { fontFamily: 'monospace', fontSize: sz + 'px', color: col, ...opts }).setOrigin(0.5);
+}
+
 function buildHud(scene) {
   // Stats backdrop + 5 stacked single-line readouts.
-  scene.add.rectangle(4, 4, 168, 74, 0x0a0d18, 0.7).setOrigin(0).setDepth(19);
+  scene.add.rectangle(4, 4, 200, 74, 0x0a0d18, 0.7).setOrigin(0).setDepth(19);
   const STATS = [
-    ['toolText',     6, '#ffe066'],
-    ['dayText',     20, '#a0c8ff'],
-    ['hpText',      34, '#ff6666'],
+    ['toolText',     6, C_Y],
+    ['dayText',     20, C_B],
+    ['hpText',      34, C_R],
     ['villagerText',48, '#a0e0a0'],
-    ['scoreText',   62, '#ffe066'],
+    ['scoreText',   62, C_Y],
   ];
   for (const [k, y, color] of STATS) {
     scene[k] = scene.add.text(8, y, '', {
@@ -1744,14 +1785,9 @@ function buildHud(scene) {
 
   scene.invHud = { container: scene.add.container(8, 80).setDepth(20), rows: [] };
 
-  scene.toastText = scene.add
-    .text(GAME_WIDTH / 2, GAME_HEIGHT / 3, '', {
-      fontFamily: 'monospace', fontSize: '48px', color: '#ffe066', fontStyle: 'bold',
-      stroke: '#000000', strokeThickness: 4, align: 'center',
-    })
-    .setOrigin(0.5)
-    .setDepth(50)
-    .setAlpha(0);
+  scene.toastText = mkText(scene, GAME_WIDTH / 2, GAME_HEIGHT / 3, '', 48, C_Y,
+    { fontStyle: 'bold', stroke: '#000000', strokeThickness: 4, align: 'center' })
+    .setDepth(50).setAlpha(0);
 
   // Night overlay — translucent dark blue tint so the player can still
   // see what they're doing while it's clearly night.
@@ -1771,28 +1807,12 @@ function buildHud(scene) {
 
 function buildDeathModalUi(scene) {
   const c = scene.add.container(0, 0).setDepth(60).setVisible(false);
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.85));
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 420, 240, 0x240010).setStrokeStyle(2, 0xff6666));
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, 'YOU DIED', {
-        fontFamily: 'monospace', fontSize: '36px', color: '#ff6666', fontStyle: 'bold',
-      })
-      .setOrigin(0.5),
-  );
-  const stats = scene.add
-    .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 10, '', {
-      fontFamily: 'monospace', fontSize: '14px', color: '#ffffff', align: 'center', lineSpacing: 4,
-    })
-    .setOrigin(0.5);
+  addDimBox(scene, c, 420, 240, 0x240010, 0xff6666, 0.85);
+  const cx = GAME_WIDTH / 2, cy = GAME_HEIGHT / 2;
+  c.add(mkText(scene, cx, cy - 80, 'YOU DIED', 36, C_R, { fontStyle: 'bold' }));
+  const stats = mkText(scene, cx, cy - 10, '', 14, '#ffffff', { align: 'center', lineSpacing: 4 });
   c.add(stats);
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 80, 'PRESS U TO RESTART', {
-        fontFamily: 'monospace', fontSize: '12px', color: '#a0a8b0',
-      })
-      .setOrigin(0.5),
-  );
+  c.add(mkText(scene, cx, cy + 80, 'U TO RESTART', 12, C_M));
   scene.deathModal = { container: c, statsText: stats };
 }
 
@@ -1800,29 +1820,13 @@ function buildDeathModalUi(scene) {
 
 function buildTitleUi(scene) {
   const c = scene.add.container(0, 0).setDepth(55);
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x050810, 0.92));
-  c.add(
-    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, 'STRIKE AND STONE', {
-      fontFamily: 'monospace', fontSize: '40px', color: '#ffe066', fontStyle: 'bold',
-      stroke: '#000000', strokeThickness: 4,
-    }).setOrigin(0.5),
-  );
-  c.add(
-    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 30, 'a falling-sand miner', {
-      fontFamily: 'monospace', fontSize: '14px', color: '#a0c8ff',
-    }).setOrigin(0.5),
-  );
-  c.add(
-    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 40, 'PRESS U TO START', {
-      fontFamily: 'monospace', fontSize: '16px', color: '#ffffff', fontStyle: 'bold',
-    }).setOrigin(0.5),
-  );
-  c.add(
-    scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 78,
-      'A/D move   W jump   U mine/attack   I menu   O home/sleep', {
-      fontFamily: 'monospace', fontSize: '10px', color: '#7a7a82',
-    }).setOrigin(0.5),
-  );
+  const cx = GAME_WIDTH / 2, cy = GAME_HEIGHT / 2;
+  c.add(scene.add.rectangle(cx, cy, GAME_WIDTH, GAME_HEIGHT, 0x050810, 0.92));
+  c.add(mkText(scene, cx, cy - 80, 'STRIKE AND STONE', 40, C_Y,
+    { fontStyle: 'bold', stroke: '#000000', strokeThickness: 4 }));
+  c.add(mkText(scene, cx, cy - 30, 'a falling-sand miner', 14, C_B));
+  c.add(mkText(scene, cx, cy + 40, 'PRESS U TO START', 16, '#ffffff', { fontStyle: 'bold' }));
+  c.add(mkText(scene, cx, cy + 78, 'A/D move   W jump   U mine/attack   I menu   O home/sleep', 10, C_G));
   scene.titleContainer = c;
 }
 
@@ -1836,7 +1840,7 @@ function buildTutorialUi(scene) {
   const bg = scene.add.rectangle(0, 0, 460, 26, 0x0a0d18, 0.88).setOrigin(0.5);
   bg.setStrokeStyle(2, 0xffe066);
   const text = scene.add.text(0, 0, '', {
-    fontFamily: 'monospace', fontSize: '11px', color: '#ffe066',
+    fontFamily: 'monospace', fontSize: '11px', color: C_Y,
     fontStyle: 'bold', align: 'center', lineSpacing: 2,
   }).setOrigin(0.5);
   c.add(bg);
@@ -1867,19 +1871,27 @@ function setTutorialStep(scene, step) {
   }
 }
 
+// Predicates indexed by step (1..N). Each returns truthy when the player
+// completed that step's task. Aligned with TUTORIAL_STEPS.
+const TUT_PRED = [
+  null,
+  s => s.inventory[WOOD] >= 1,
+  s => s.inventory[WOOD] >= 10,
+  s => s.pick >= TIER_WOOD,
+  s => s.basePlaced,
+  s => s.bedPlaced,
+  s => s.everSlept,
+  s => s.smeltedAny,
+  s => s.villagerCount >= 1,
+];
+
 function tickTutorial(scene) {
   const t = scene.tutorial;
-  if (t.step === 0 || t.step >= TUTORIAL_STEPS.length - 1) return;
-  const inv = scene.inventory;
-  if (t.step === 1 && inv[WOOD] >= 1) { setTutorialStep(scene, 2); return; }
-  if (t.step === 2 && inv[WOOD] >= 10) { setTutorialStep(scene, 3); return; }
-  if (t.step === 3 && scene.pick >= TIER_WOOD) { setTutorialStep(scene, 4); return; }
-  if (t.step === 4 && scene.basePlaced) { setTutorialStep(scene, 5); return; }
-  if (t.step === 5 && scene.bedPlaced) { setTutorialStep(scene, 6); return; }
-  if (t.step === 6 && scene.everSlept) { setTutorialStep(scene, 7); return; }
-  if (t.step === 7 && scene.smeltedAny) { setTutorialStep(scene, 8); return; }
-  if (t.step === 8 && scene.villagerCount >= 1) { setTutorialStep(scene, 9); return; }
-  if (t.step === TUTORIAL_FINAL_STEP && scene.tickCount >= t.finalDismissTick) {
+  const s = t.step;
+  if (s === 0 || s >= TUTORIAL_STEPS.length - 1) return;
+  const p = TUT_PRED[s];
+  if (p && p(scene)) { setTutorialStep(scene, s + 1); return; }
+  if (s === TUTORIAL_FINAL_STEP && scene.tickCount >= t.finalDismissTick) {
     setTutorialStep(scene, TUTORIAL_FINAL_STEP + 1);
   }
 }
@@ -1899,7 +1911,7 @@ function refreshDayTimer(scene) {
   const mm = Math.floor(totalSec / 60);
   const ss = Math.floor(totalSec % 60);
   scene.dayText.setText((night ? 'NIGHT ' : 'DAY ') + mm + ':' + (ss < 10 ? '0' : '') + ss);
-  scene.dayText.setColor(night ? '#8888ff' : '#a0c8ff');
+  scene.dayText.setColor(night ? '#8888ff' : C_B);
 }
 
 function recomputeDayLengths(scene) {
@@ -1967,7 +1979,7 @@ function showToast(scene, text) {
 
 // ----- Build menu -----
 
-const BUILD_MENU_ROW_COUNT = 15;
+const BUILD_MENU_ROW_COUNT = 16;
 const BUILD_MENU_ROW_STEP = 18;
 
 function getCurrentRecipes(scene) {
@@ -1979,23 +1991,22 @@ function getCurrentRecipes(scene) {
 function isRecipeLocked(scene, recipe) {
   if (recipe.pickTier  != null) return scene.pick  >= recipe.pickTier;
   if (recipe.swordTier != null) return scene.sword >= recipe.swordTier;
+  if (recipe.armorTier != null) return scene.armor >= recipe.armorTier;
   return false;
 }
 
-// Build the cost string shown in the menu. Tools use the old `cost` array;
-// buildings use `costPerTile` / `costTotal` + `material`.
-function recipeCostLabel(recipe) {
-  if (recipe.cost) {
-    let s = '';
-    for (let k = 0; k < recipe.cost.length; k++) {
-      const [id, amt] = recipe.cost[k];
-      s += (k > 0 ? ' + ' : '') + amt + ' ' + BLOCK_NAME[id].toUpperCase();
-    }
-    return s;
-  }
-  const matName = BLOCK_NAME[recipe.material].toUpperCase();
-  const amt = recipe.costPerTile != null ? recipe.costPerTile : recipe.costTotal;
-  return amt != null ? amt + ' ' + matName : '';
+// Build the cost string shown in the menu. Tools use the `cost` array;
+// buildings use `costPerTile` / `costTotal` + `material`. Only runs on
+// menu events, allocations are fine here.
+function recipeCostLabel(r) {
+  if (r.cost) return r.cost.map(([id, amt]) => amt + ' ' + BLOCK_NAME[id].toUpperCase()).join(' + ');
+  const amt = r.costPerTile != null ? r.costPerTile : r.costTotal;
+  return amt != null ? amt + ' ' + BLOCK_NAME[r.material].toUpperCase() : '';
+}
+
+// Cost of a building recipe at given size. Falls back to costPerTile.
+function placementCost(r, w, h) {
+  return r.costTotal != null ? r.costTotal : r.costPerTile * w * h;
 }
 
 // Does the player have enough materials right now? Works for both schemas.
@@ -2005,26 +2016,20 @@ function recipeAffordable(scene, recipe) {
     for (const [id, amt] of recipe.cost) if (inv[id] < amt) return false;
     return true;
   }
-  // Building recipe: min cost is one unit's worth; resizable ones eat
-  // more at placement time, checked again in attemptPlacement.
-  const minCost = recipe.costTotal != null ? recipe.costTotal : recipe.costPerTile * (PLACEMENT_DEFAULTS[recipe.kind].minW * PLACEMENT_DEFAULTS[recipe.kind].minH);
-  return inv[recipe.material] >= minCost;
+  const d = PLACEMENT_DEFAULTS[recipe.kind];
+  return inv[recipe.material] >= placementCost(recipe, d.minW, d.minH);
 }
 
-function findFirstUnlocked(scene, recipes) {
-  for (let i = 0; i < recipes.length; i++) {
-    if (!isRecipeLocked(scene, recipes[i])) return i;
-  }
-  return 0; // all locked → land on first row anyway
-}
-
-function findNextUnlocked(scene, recipes, fromIdx, dir) {
+// Walk recipes from `fromIdx` in `dir` direction, returning first
+// unlocked index. -1 if all locked. `findFirstUnlocked` is just
+// `findUnlocked(s, r, -1, 1)` with a clamp fallback.
+function findUnlocked(scene, recipes, fromIdx, dir) {
   const n = recipes.length;
   for (let i = 1; i <= n; i++) {
     const idx = (((fromIdx + dir * i) % n) + n) % n;
     if (!isRecipeLocked(scene, recipes[idx])) return idx;
   }
-  return -1; // all locked
+  return -1;
 }
 
 function buildBuildMenuUi(scene) {
@@ -2032,27 +2037,14 @@ function buildBuildMenuUi(scene) {
   c.setVisible(false);
   scene.buildMenuContainer = c;
 
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.75));
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 460, 470, 0x1a2238).setStrokeStyle(2, 0xffe066));
+  addDimBox(scene, c, 460, 488, 0x1a2238, 0xffe066, 0.75);
 
-  c.add(
-    scene.add.text(GAME_WIDTH / 2, 108, 'BUILD', {
-      fontFamily: 'monospace', fontSize: '22px', color: '#ffe066', fontStyle: 'bold',
-    }).setOrigin(0.5),
-  );
+  c.add(mkText(scene, GAME_WIDTH / 2, 108, 'BUILD', 22, C_Y, { fontStyle: 'bold' }));
 
   // Tab headers (active tab is highlighted; switch with L/R).
   scene.buildMenuTabs = {};
-  scene.buildMenuTabs.tools = scene.add
-    .text(GAME_WIDTH / 2 - 80, 140, '< TOOLS', {
-      fontFamily: 'monospace', fontSize: '13px', color: '#ffe066', fontStyle: 'bold',
-    })
-    .setOrigin(0.5);
-  scene.buildMenuTabs.buildings = scene.add
-    .text(GAME_WIDTH / 2 + 80, 140, 'BUILDINGS >', {
-      fontFamily: 'monospace', fontSize: '13px', color: '#7a7a82', fontStyle: 'bold',
-    })
-    .setOrigin(0.5);
+  scene.buildMenuTabs.tools = mkText(scene, GAME_WIDTH / 2 - 80, 140, '< TOOLS', 13, C_Y, { fontStyle: 'bold' });
+  scene.buildMenuTabs.buildings = mkText(scene, GAME_WIDTH / 2 + 80, 140, 'BUILDINGS >', 13, C_G, { fontStyle: 'bold' });
   c.add(scene.buildMenuTabs.tools);
   c.add(scene.buildMenuTabs.buildings);
 
@@ -2073,19 +2065,14 @@ function buildBuildMenuUi(scene) {
     scene.buildMenuRows.push(row);
   }
 
-  c.add(
-    scene.add.text(GAME_WIDTH / 2, 460,
-      'UP/DOWN PICK   L/R TAB   U CONFIRM   I CLOSE', {
-      fontFamily: 'monospace', fontSize: '10px', color: '#a0a8b0',
-    }).setOrigin(0.5),
-  );
+  c.add(mkText(scene, GAME_WIDTH / 2, 478, 'UP/DOWN PICK   L/R TAB   U CONFIRM   I CLOSE', 10, C_M));
 }
 
 function openBuildMenu(scene) {
   scene.buildMenu.open = true;
   scene.buildMenu.tab = 'tools';
   const recipes = getCurrentRecipes(scene);
-  scene.buildMenu.cursor = findFirstUnlocked(scene, recipes);
+  scene.buildMenu.cursor = Math.max(0, findUnlocked(scene, recipes, -1, 1));
   scene.buildMenuContainer.setVisible(true);
   refreshBuildMenu(scene);
 }
@@ -2098,8 +2085,8 @@ function closeBuildMenu(scene) {
 function refreshBuildMenu(scene) {
   const recipes = getCurrentRecipes(scene);
 
-  scene.buildMenuTabs.tools.setColor(scene.buildMenu.tab === 'tools' ? '#ffe066' : '#7a7a82');
-  scene.buildMenuTabs.buildings.setColor(scene.buildMenu.tab === 'buildings' ? '#ffe066' : '#7a7a82');
+  scene.buildMenuTabs.tools.setColor(scene.buildMenu.tab === 'tools' ? C_Y : C_G);
+  scene.buildMenuTabs.buildings.setColor(scene.buildMenu.tab === 'buildings' ? C_Y : C_G);
 
   for (let i = 0; i < scene.buildMenuRows.length; i++) {
     const row = scene.buildMenuRows[i];
@@ -2116,7 +2103,7 @@ function refreshBuildMenu(scene) {
     const locked = isRecipeLocked(scene, recipe);
     let color;
     if (locked)        color = '#5a5a5a';
-    else if (!canAfford) color = '#7a7a82';
+    else if (!canAfford) color = C_G;
     else                 color = '#ffffff';
     row.text.setColor(color);
 
@@ -2142,7 +2129,7 @@ function handleBuildMenuInput(scene) {
     c.pressed.P1_L = false;
     c.pressed.P1_R = false;
     scene.buildMenu.tab = scene.buildMenu.tab === 'tools' ? 'buildings' : 'tools';
-    scene.buildMenu.cursor = findFirstUnlocked(scene, getCurrentRecipes(scene));
+    scene.buildMenu.cursor = Math.max(0, findUnlocked(scene, getCurrentRecipes(scene), -1, 1));
     refreshBuildMenu(scene);
     return;
   }
@@ -2150,7 +2137,7 @@ function handleBuildMenuInput(scene) {
   if (c.pressed.P1_U || c.pressed.P1_D) {
     const dir = c.pressed.P1_U ? -1 : 1;
     c.pressed.P1_U = false; c.pressed.P1_D = false;
-    const next = findNextUnlocked(scene, getCurrentRecipes(scene), scene.buildMenu.cursor, dir);
+    const next = findUnlocked(scene, getCurrentRecipes(scene), scene.buildMenu.cursor, dir);
     if (next >= 0) scene.buildMenu.cursor = next;
     refreshBuildMenu(scene);
     return;
@@ -2167,38 +2154,25 @@ function confirmBuildRecipe(scene) {
   const recipe = recipes[scene.buildMenu.cursor];
   if (!recipe || isRecipeLocked(scene, recipe)) return;
   const inv = scene.inventory;
-  // Generic cost check for tool recipes (they carry a `recipe.cost`
-  // array). Building recipes validate affordability in attemptPlacement
-  // once the player has chosen final size.
-  if (recipe.cost) {
-    for (const [id, amt] of recipe.cost) {
-      if (inv[id] < amt) {
-        showToast(scene, 'NOT ENOUGH!');
-        return;
-      }
-    }
-  }
-
-  // Pick / sword recipes → upgrade the relevant tool slot.
-  if (recipe.pickTier != null) {
-    if (scene.pick >= recipe.pickTier) {
-      showToast(scene, 'ALREADY HAVE IT!');
-      return;
-    }
-    for (const [id, amt] of recipe.cost) inv[id] -= amt;
-    scene.pick = recipe.pickTier;
-    scene.invDirty = true;
-    showToast(scene, recipe.name + '!');
-    closeBuildMenu(scene);
+  if (recipe.cost && !recipeAffordable(scene, recipe)) {
+    showToast(scene, 'NOT ENOUGH!');
     return;
   }
-  if (recipe.swordTier != null) {
-    if (scene.sword >= recipe.swordTier) {
-      showToast(scene, 'ALREADY HAVE IT!');
-      return;
-    }
+
+  // Pick / sword / armor recipes → upgrade the relevant slot. Lock-check
+  // already covered "already have higher tier", so we just consume + assign.
+  const tier = recipe.pickTier != null ? recipe.pickTier
+             : recipe.swordTier != null ? recipe.swordTier
+             : recipe.armorTier;
+  if (tier != null) {
     for (const [id, amt] of recipe.cost) inv[id] -= amt;
-    scene.sword = recipe.swordTier;
+    if (recipe.pickTier != null) scene.pick = tier;
+    else if (recipe.swordTier != null) scene.sword = tier;
+    else {
+      scene.armor = tier;
+      scene.player.maxHp = PLAYER_MAX_HP + ARMOR_BONUS[tier];
+      scene.player.hp = scene.player.maxHp;
+    }
     scene.invDirty = true;
     showToast(scene, recipe.name + '!');
     closeBuildMenu(scene);
@@ -2228,8 +2202,8 @@ function confirmBuildRecipe(scene) {
 function isStructuralTile(cell) {
   const t = cell & TYPE_MASK;
   return t === BRICK_DIRT || t === BRICK_STONE || t === BRICK_COPPER || t === BRICK_IRON ||
-    t === OBSIDIAN || t === FURNACE || t === DOOR_WOOD ||
-    t === STAIR_WOOD || t === BED_WOOD || t === BED_IRON;
+    t === OBSIDIAN || t === FURNACE || t === DOOR_WOOD || t === DOOR_IRON ||
+    t === STAIR_WOOD || t === BED_WOOD || t === BED_COPPER;
 }
 
 function enterPlacement(scene, recipe) {
@@ -2344,12 +2318,7 @@ function refreshPlacement(scene) {
   }
 
   // Enough materials?
-  if (valid) {
-    const needed = recipe.costTotal != null
-      ? recipe.costTotal
-      : recipe.costPerTile * p_.w * p_.h;
-    if (scene.inventory[recipe.material] < needed) valid = false;
-  }
+  if (valid && scene.inventory[recipe.material] < placementCost(recipe, p_.w, p_.h)) valid = false;
 
   p_.valid = valid;
   drawPlacementPreview(scene);
@@ -2407,7 +2376,7 @@ function attemptPlacement(scene) {
   const p_ = scene.placement;
   if (!p_.valid) { showToast(scene, 'INVALID!'); return; }
   const recipe = p_.recipe;
-  const cost = recipe.costTotal != null ? recipe.costTotal : recipe.costPerTile * p_.w * p_.h;
+  const cost = placementCost(recipe, p_.w, p_.h);
   if (scene.inventory[recipe.material] < cost) { showToast(scene, 'NOT ENOUGH!'); return; }
   scene.inventory[recipe.material] -= cost;
 
@@ -2631,20 +2600,19 @@ function applyMonsterDamage(scene, m, dmg) {
   if (m.hp <= 0) destroyMonster(scene, m);
 }
 
-// Monster visual: simple body + eye, body color/shape per type.
-// [bodyW, bodyH, bodyY, bodyColor, eyeColor]
+// Monster visual: flat [bodyW, bodyH, bodyY, bodyColor, eyeColor] × 5.
 const MON_VIS = [
-  [12, 7,  -4,  0x44a060, 0x101018], // slime
-  [12, 18, -10, 0x5a7042, 0x101018], // zombie
-  [14, 7,  -4,  0x6a2a30, 0xff6060], // flyer
-  [10, 12, -8,  0xc4dcf2, 0x101018], // ghost
-  [12, 12, -8,  0x5aaa30, 0x101018], // bomber
+  12, 7,  -4,  0x44a060, 0x101018,   // slime
+  12, 18, -10, 0x5a7042, 0x101018,   // zombie
+  14, 7,  -4,  0x6a2a30, 0xff6060,   // flyer
+  10, 12, -8,  0xc4dcf2, 0x101018,   // ghost
+  12, 12, -8,  0x5aaa30, 0x101018,   // bomber
 ];
 function buildMonsterVisual(scene, type) {
   const c = scene.add.container(0, 0).setDepth(9);
-  const v = MON_VIS[type];
-  c.add(scene.add.rectangle(0, v[2], v[0], v[1], v[3]));
-  c.add(scene.add.rectangle(2, v[2] - 1, 2, 2, v[4]));
+  const o = type * 5;
+  c.add(scene.add.rectangle(0, MON_VIS[o + 2], MON_VIS[o], MON_VIS[o + 1], MON_VIS[o + 3]));
+  c.add(scene.add.rectangle(2, MON_VIS[o + 2] - 1, 2, 2, MON_VIS[o + 4]));
   if (type === MON_GHOST) c.setAlpha(0.82);
   return c;
 }
@@ -2684,14 +2652,7 @@ function monsterAttackTiles(scene, m) {
       t === WOOD ||
       (m.stuck && (t === DIRT || t === STONE || t === SAND));
     if (!attackable) continue;
-    const hard = BLOCK_HARDNESS[t];
-    if (hard === 0) continue;
-    scene.damage[idx] = Math.min(65535, scene.damage[idx] + (M_ATK_DMG[m.type] * m.dmgScale) | 0);
-    if (scene.damage[idx] >= hard) {
-      scene.world[idx] = AIR;
-      scene.damage[idx] = 0;
-      scene.dirtyMineral = true;
-    }
+    applyTileDamage(scene, idx, (M_ATK_DMG[m.type] * m.dmgScale) | 0);
     return; // one tile per attack
   }
 }
@@ -2716,8 +2677,7 @@ function tickMonster(scene, m, p) {
   const dx = p.x - m.x;
   m.facing = dx >= 0 ? 1 : -1;
 
-  if (M_AI[type]) {
-    // glide
+  if (flags & MF_GLIDE) {
     const dy = (p.y - p.h / 2) - (m.y - m.h / 2);
     const dist = Math.hypot(dx, dy) || 1;
     const sp = M_GLIDE[type];
@@ -2726,21 +2686,19 @@ function tickMonster(scene, m, p) {
     if (phases) { m.x += m.vx; m.y += m.vy; }
     else        { moveBox(scene, m, isSolidForMonster, 0, 0); }
   } else {
-    // ground
     const onGround = monsterOnGround(scene, m);
     const fuseBurning = (flags & MF_EXPLODES) && m.fuseTicks > 0;
 
     if (!fuseBurning) {
       let jumpNow = false;
-      const trig = M_JUMP_TR[type];
-      if (trig === 1 && onGround) {
+      if ((flags & MF_JUMP_TIMER) && onGround) {
         m.jumpTimer--;
         if (m.jumpTimer <= 0) {
           jumpNow = true;
           const lo = M_JUMP_MIN[type], hi = M_JUMP_MAX[type];
           m.jumpTimer = lo + ((Math.random() * (hi - lo)) | 0);
         }
-      } else if (trig === 2 && onGround && monsterBlockedAhead(scene, m)) {
+      } else if ((flags & MF_JUMP_BLOCKED) && onGround && monsterBlockedAhead(scene, m)) {
         jumpNow = true;
       }
       if (jumpNow) m.vy = m.stuck ? STUCK_JUMP_VELOCITY : M_JUMP_V[type];
@@ -2820,11 +2778,15 @@ function bomberExplode(scene, m) {
   destroyMonster(scene, m);
 }
 
-// Centralized cleanup so sprite + HP bar + array entry go together.
-function destroyMonster(scene, m) {
+function killMonGfx(m) {
   m.sprite.destroy();
   if (m.hpBarBg) m.hpBarBg.destroy();
   if (m.hpBarFg) m.hpBarFg.destroy();
+}
+
+// Centralized cleanup so sprite + HP bar + array entry go together.
+function destroyMonster(scene, m) {
+  killMonGfx(m);
   const idx = scene.monsters.indexOf(m);
   if (idx >= 0) scene.monsters.splice(idx, 1);
 }
@@ -2908,12 +2870,7 @@ function renderMonsters(scene) {
 }
 
 function despawnAllMonsters(scene) {
-  for (let i = 0; i < scene.monsters.length; i++) {
-    const m = scene.monsters[i];
-    m.sprite.destroy();
-    if (m.hpBarBg) m.hpBarBg.destroy();
-    if (m.hpBarFg) m.hpBarFg.destroy();
-  }
+  for (let i = 0; i < scene.monsters.length; i++) killMonGfx(scene.monsters[i]);
   scene.monsters.length = 0;
   scene.monsterSpawnTimer = BASE_SPAWN_INTERVAL;
 }
@@ -2921,73 +2878,56 @@ function despawnAllMonsters(scene) {
 // ----- Villagers: 9..80-cell rooms with ≥1 bed and ≥1 built wall.
 const VILLAGER_BODY_COLORS = [0x4060a0, 0xa04060];
 
-// Returns [bedIdx, bedKind] pairs, one per bed in a valid sealed room.
-//
-// Two-pass strategy (the only correct way to detect a sealed pocket):
-//   1) Flood-fill from the world's outer ring, marking every AIR/decor
-//      cell connected to the world border. Anything reachable from the
-//      outside is "open air".
-//   2) Any AIR cell still unmarked is in a SEALED pocket. For each pocket
-//      flood it, count volume, beds, and structural walls. If it meets
-//      the size + bed + wall thresholds, it's a valid house.
-//
-// Why two passes: a one-pass flood that bails on `vol > 80` leaves
-// "scarred" visited cells that can fake-seal a partially-open room when
-// the next flood meets the scar. The border-first pass guarantees that
-// if there's any path to the outside, the room is correctly marked open.
+// Per-bed BFS: for each bed in the world, flood the AIR pocket adjacent
+// to it (cap 100 cells). If the flood reaches the world border or exceeds
+// the cap → open. If it ends within bounds AND saw a built wall → valid
+// closed room. Each bed uses its own visitedTag so floods don't interfere.
 function scanVillages(scene) {
   const w = scene.world;
   const visited = scene.visited;
-  scene.visitedTag = (scene.visitedTag + 1) & 0xff;
-  if (scene.visitedTag === 0) { visited.fill(0); scene.visitedTag = 1; }
-  const tag = scene.visitedTag;
+  const N = w.length;
+  const Q = scene.bigBfsQueue;
   const out = [];
-  // Larger queue than bfsQueue; the outside flood may hold most of the sky.
-  const Q = new Int32Array(WORLD_W * WORLD_H);
-  let qh = 0, qt = 0;
-  const enq = (i) => {
-    if (visited[i] === tag) return;
-    const cat = BLOCK_CAT[w[i] & TYPE_MASK];
-    if (cat === CAT_AIR || cat === CAT_DECOR) { visited[i] = tag; Q[qt++] = i; }
-  };
-  // Pass 1: seed from the inner ring (one tile inside the BORDER frame).
-  for (let x = 1; x < WORLD_W - 1; x++) {
-    enq(WORLD_W + x);
-    enq((WORLD_H - 2) * WORLD_W + x);
+  const beds = [];
+  // 1) One linear pass to find every bed in the world.
+  for (let i = 0; i < N; i++) {
+    const t = w[i] & TYPE_MASK;
+    if (t === BED_WOOD || t === BED_COPPER) beds.push(i, t);
   }
-  for (let y = 1; y < WORLD_H - 1; y++) {
-    enq(y * WORLD_W + 1);
-    enq(y * WORLD_W + WORLD_W - 2);
-  }
-  while (qh < qt) {
-    const idx = Q[qh++];
-    enq(idx - 1); enq(idx + 1);
-    enq(idx - WORLD_W); enq(idx + WORLD_W);
-  }
-  // Pass 2: any AIR still unmarked is a sealed pocket.
-  for (let s = WORLD_W; s < (WORLD_H - 1) * WORLD_W; s++) {
-    if (visited[s] === tag) continue;
-    if ((w[s] & TYPE_MASK) !== AIR) continue;
-    qh = 0; qt = 0;
-    Q[qt++] = s; visited[s] = tag;
-    let vol = 0, builtWalls = 0;
-    const beds = [];
-    while (qh < qt && vol <= 80) {
+  // 2) Per-bed local flood with its own tag. Caps at 80 cells so we never
+  //    explore the whole sky.
+  for (let bi = 0; bi < beds.length; bi += 2) {
+    scene.visitedTag = (scene.visitedTag + 1) & 0xff;
+    if (scene.visitedTag === 0) { visited.fill(0); scene.visitedTag = 1; }
+    const tag = scene.visitedTag;
+    const bedIdx = beds[bi];
+    // Seed from any AIR cell touching the bed.
+    let qh = 0, qt = 0;
+    const seeds = [bedIdx - WORLD_W, bedIdx + WORLD_W, bedIdx - 1, bedIdx + 1];
+    for (const s of seeds) {
+      if (s >= 0 && s < N && (w[s] & TYPE_MASK) === AIR && visited[s] !== tag) {
+        visited[s] = tag;
+        Q[qt++] = s;
+      }
+    }
+    if (qt === 0) continue;
+    let vol = 0, ok = 1, builtWalls = 0;
+    while (qh < qt) {
       const idx = Q[qh++];
-      vol++;
+      if (++vol > 100) { ok = 0; break; }
+      const x = idx % WORLD_W, y = (idx / WORLD_W) | 0;
+      if (x <= 0 || x >= WORLD_W - 1 || y <= 0 || y >= WORLD_H - 1) { ok = 0; break; }
       const nbrs = [idx - 1, idx + 1, idx - WORLD_W, idx + WORLD_W];
       for (let k = 0; k < 4; k++) {
         const n = nbrs[k];
-        if (visited[n] === tag) continue;
+        if (n < 0 || n >= N || visited[n] === tag) continue;
         const nt = w[n] & TYPE_MASK;
         const cat = BLOCK_CAT[nt];
         if (cat === CAT_AIR || cat === CAT_DECOR) { visited[n] = tag; Q[qt++] = n; }
-        else if (nt === BED_WOOD || nt === BED_IRON) { visited[n] = tag; beds.push(n, nt); }
         else if (isStructuralTile(w[n])) builtWalls++;
       }
     }
-    if (vol <= 80 && vol >= 9 && beds.length && builtWalls > 0)
-      for (let i = 0; i < beds.length; i += 2) out.push(beds[i], beds[i + 1]);
+    if (ok && vol >= 9 && builtWalls > 0) out.push(bedIdx, beds[bi + 1]);
   }
   return out;
 }
@@ -3065,9 +3005,9 @@ function toneBurst(ctx, freq, dur, type, peak, atk) {
   osc.frequency.value = freq;
   const g = ctx.createGain();
   const t = ctx.currentTime;
-  g.gain.setValueAtTime(0.0001, t);
+  g.gain.setValueAtTime(1e-4, t);
   g.gain.linearRampToValueAtTime(peak, t + (atk || 0.005));
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  g.gain.exponentialRampToValueAtTime(1e-4, t + dur);
   osc.connect(g); g.connect(ctx.destination);
   osc.start(t); osc.stop(t + dur + 0.05);
 }
@@ -3082,7 +3022,7 @@ function noiseBurst(ctx, dur, peak, filterType, filterFreq) {
   const g = ctx.createGain();
   const t = ctx.currentTime;
   g.gain.setValueAtTime(peak, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  g.gain.exponentialRampToValueAtTime(1e-4, t + dur);
   let node = src;
   if (filterType) {
     const f = ctx.createBiquadFilter();
@@ -3110,7 +3050,7 @@ function sfx(scene, name) {
     o.frequency.exponentialRampToValueAtTime(35, tt + 0.45);
     const gg = ctx.createGain();
     gg.gain.setValueAtTime(0.20, tt);
-    gg.gain.exponentialRampToValueAtTime(0.0001, tt + 0.45);
+    gg.gain.exponentialRampToValueAtTime(1e-4, tt + 0.45);
     o.connect(gg); gg.connect(ctx.destination);
     o.start(tt); o.stop(tt + 0.5);
     noiseBurst(ctx, 0.5, 0.20, 'lowpass', 450);
@@ -3133,7 +3073,7 @@ function playMusicNote(ctx, freq, dur, peak) {
   const t = ctx.currentTime;
   g.gain.setValueAtTime(0, t);
   g.gain.linearRampToValueAtTime(peak, t + 0.03);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  g.gain.exponentialRampToValueAtTime(1e-4, t + dur);
   osc.connect(g); g.connect(ctx.destination);
   osc.start(t); osc.stop(t + dur + 0.1);
 }
