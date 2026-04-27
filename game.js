@@ -116,8 +116,11 @@ const BLOCKS = [
   { id: BED_WOOD,     name: 'bed',          cat: CAT_MAGIC, color: 0xff4050c0, hardness: 4,  drop: WOOD         },
   { id: BED_COPPER,   name: 'copper bed',   cat: CAT_MAGIC, color: 0xff8060d0, hardness: 40, drop: COPPER_INGOT },
   { id: OBSIDIAN,     name: 'obsidian',     cat: CAT_MAGIC, color: 0xff40182a, hardness: 480, flags: F_FOR_BUILD | F_IS_BRICK, brick: OBSIDIAN },
-  // Hard rock: 2× stone hardness, the deep-world base layer below stone.
-  { id: HARD_ROCK,    name: 'hard rock',    cat: CAT_MINERAL, color: 0xff353038, fallTicks: 15, hardness: 40, flags: F_FOR_BUILD, brick: BRICK_HARD_ROCK, extra: { name: 'HARD FURNACE', kind: 'furnace', material: HARD_ROCK, tile: FURNACE_HARD, costTotal: 50 } },
+  // Hard rock: 2× stone hardness, deep-world bedrock layer. CAT_SOLID with
+  // fallTicks=0 → never falls, never swaps with liquids (otherwise the dense
+  // lava/water/air pockets isolate chunks and the FB_SWAP_LIQUID rule of
+  // CAT_MINERAL produces a "bubbling" cascade through the whole layer).
+  { id: HARD_ROCK,    name: 'hard rock',    cat: CAT_SOLID,   color: 0xff353038, fallTicks: 0,  hardness: 40, flags: F_FOR_BUILD, brick: BRICK_HARD_ROCK, extra: { name: 'HARD FURNACE', kind: 'furnace', material: HARD_ROCK, tile: FURNACE_HARD, costTotal: 50 } },
   { id: MITHRIL,      name: 'mithril',      cat: CAT_MINERAL, color: 0xffd0c8a8, fallTicks: 20, hardness: 160, flags: F_FOR_TOOL | F_IS_VEIN | F_IS_MINERAL, tier: 5 },
   { id: MITHRIL_INGOT,name: 'mithril ingot',cat: CAT_AIR,     color: 0xffe0e8f0, armor: 3 },
 ];
