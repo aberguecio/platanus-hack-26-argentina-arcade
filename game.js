@@ -181,6 +181,7 @@ const C_Y = '#ffe066', C_G = '#7a7a82', C_B = '#a0c8ff', C_R = '#ff6666', C_M = 
 const FF = 'monospace', FW = '#ffffff';
 const STY_B = { fontStyle: 'bold' };
 const STY_BS = { fontStyle: 'bold', stroke: '#000000', strokeThickness: 4 };
+const STY_HUD = { fontFamily: 'monospace', fontSize: '11px' };
 // Button labels — flip these to change PC/cabinet UX. esbuild folds them
 // into the strings at build time, so configurability is free at runtime.
 const B1 = 'B1', B2 = 'B2', B3 = 'B3';
@@ -213,15 +214,15 @@ for (const b of BLOCKS) {
 }
 // TOOL_RECIPES already comes out tier-ordered from BLOCKS; no sort needed.
 
-// Per-kind defaults for the placement mode. `resize` says which axis
-// grows with U/D; null means fixed size.
+// Per-kind defaults for the placement mode. Tuple [minW, maxW, minH, maxH, resizeAxis].
+// resizeAxis: 0 = W grows with U/D, 1 = H grows, 2 = fixed size.
 const PLACEMENT_DEFAULTS = {
-  base:    { minW: 2, maxW: 20, minH: 1, maxH: 1,  resize: 'w' },
-  wall:    { minW: 1, maxW: 1,  minH: 2, maxH: 16, resize: 'h' },
-  stair:   { minW: 1, maxW: 1,  minH: 2, maxH: 16, resize: 'h' },
-  door:    { minW: 1, maxW: 1,  minH: 2, maxH: 4,  resize: 'h' },
-  furnace: { minW: 2, maxW: 2,  minH: 2, maxH: 2,  resize: null },
-  bed:     { minW: 2, maxW: 2,  minH: 1, maxH: 1,  resize: null },
+  base:    [2, 20, 1, 1,  0],
+  wall:    [1, 1,  2, 16, 1],
+  stair:   [1, 1,  2, 16, 1],
+  door:    [1, 1,  2, 4,  1],
+  furnace: [2, 2,  2, 2,  2],
+  bed:     [2, 2,  1, 1,  2],
 };
 
 // ----- Furnace tuning -----
@@ -1771,9 +1772,7 @@ function buildHud(scene) {
     ['scoreText',   62, C_Y],
   ];
   for (const [k, y, color] of STATS) {
-    scene[k] = scene.add.text(8, y, '', {
-      fontFamily: FF, fontSize: '11px', color,
-    }).setDepth(20);
+    scene[k] = scene.add.text(8, y, '', { ...STY_HUD, color }).setDepth(20);
   }
 
   scene.invHud = { container: scene.add.container(8, 80).setDepth(20), rows: [] };
@@ -1842,8 +1841,7 @@ function buildTutorialUi(scene) {
   const bg = scene.add.rectangle(0, 0, 460, 26, 0x0a0d18, 0.88).setOrigin(0.5);
   bg.setStrokeStyle(2, 0xffe066);
   const text = scene.add.text(0, 0, '', {
-    fontFamily: FF, fontSize: '11px', color: C_Y,
-    fontStyle: 'bold', align: 'center', lineSpacing: 2,
+    ...STY_HUD, color: C_Y, fontStyle: 'bold', align: 'center', lineSpacing: 2,
   }).setOrigin(0.5);
   c.add(bg);
   c.add(text);
@@ -1943,9 +1941,7 @@ function refreshInventoryHud(scene) {
     if (!r) {
       const icon = scene.add.rectangle(0, row * 14, 10, 10, 0).setOrigin(0).setDepth(20);
       const text = scene.add
-        .text(14, row * 14 - 1, '', {
-          fontFamily: FF, fontSize: '11px', color: FW,
-        })
+        .text(14, row * 14 - 1, '', { ...STY_HUD, color: FW })
         .setDepth(20);
       scene.invHud.container.add(icon);
       scene.invHud.container.add(text);
@@ -2016,7 +2012,7 @@ function recipeAffordable(scene, recipe) {
     return true;
   }
   const d = PLACEMENT_DEFAULTS[recipe.kind];
-  return inv[recipe.material] >= placementCost(recipe, d.minW, d.minH);
+  return inv[recipe.material] >= placementCost(recipe, d[0], d[2]);
 }
 
 // Walk recipes from `fromIdx` in `dir` direction, returning first
@@ -2054,9 +2050,7 @@ function buildBuildMenuUi(scene) {
     const row = {};
     const y = 165 + i * BUILD_MENU_ROW_STEP;
     row.bg = scene.add.rectangle(GAME_WIDTH / 2, y, 420, BUILD_MENU_ROW_STEP - 2, 0x2a3555, 0).setOrigin(0.5);
-    row.text = scene.add.text(GAME_WIDTH / 2 - 195, y, '', {
-      fontFamily: FF, fontSize: '11px', color: FW,
-    }).setOrigin(0, 0.5);
+    row.text = scene.add.text(GAME_WIDTH / 2 - 195, y, '', { ...STY_HUD, color: FW }).setOrigin(0, 0.5);
     row.strike = scene.add.rectangle(GAME_WIDTH / 2, y, 380, 1, 0x808080, 0).setOrigin(0.5);
     c.add(row.bg);
     c.add(row.text);
@@ -2212,8 +2206,8 @@ function enterPlacement(scene, recipe) {
   const p_ = scene.placement;
   p_.active = true;
   p_.recipe = recipe;
-  p_.w = cfg.minW;
-  p_.h = cfg.minH;
+  p_.w = cfg[0];
+  p_.h = cfg[2];
   p_.tx = clamp(startCenterTx - ((p_.w / 2) | 0), 1, WORLD_W - p_.w - 1);
   p_.ty = 0; // recalculated in refreshPlacement
   p_.valid = false;
@@ -2318,12 +2312,12 @@ function handlePlacementInput(scene) {
   }
   if (c.pressed.P1_L) { c.pressed.P1_L = false; p_.tx = clamp(p_.tx - 1, 1, WORLD_W - p_.w - 1); }
   if (c.pressed.P1_R) { c.pressed.P1_R = false; p_.tx = clamp(p_.tx + 1, 1, WORLD_W - p_.w - 1); }
-  if (cfg.resize === 'w') {
-    if (c.pressed.P1_U) { c.pressed.P1_U = false; p_.w = Math.min(cfg.maxW, p_.w + 1); p_.tx = Math.min(p_.tx, WORLD_W - p_.w - 1); }
-    if (c.pressed.P1_D) { c.pressed.P1_D = false; p_.w = Math.max(cfg.minW, p_.w - 1); }
-  } else if (cfg.resize === 'h') {
-    if (c.pressed.P1_U) { c.pressed.P1_U = false; p_.h = Math.min(cfg.maxH, p_.h + 1); }
-    if (c.pressed.P1_D) { c.pressed.P1_D = false; p_.h = Math.max(cfg.minH, p_.h - 1); }
+  if (cfg[4] === 0) {
+    if (c.pressed.P1_U) { c.pressed.P1_U = false; p_.w = Math.min(cfg[1], p_.w + 1); p_.tx = Math.min(p_.tx, WORLD_W - p_.w - 1); }
+    if (c.pressed.P1_D) { c.pressed.P1_D = false; p_.w = Math.max(cfg[0], p_.w - 1); }
+  } else if (cfg[4] === 1) {
+    if (c.pressed.P1_U) { c.pressed.P1_U = false; p_.h = Math.min(cfg[3], p_.h + 1); }
+    if (c.pressed.P1_D) { c.pressed.P1_D = false; p_.h = Math.max(cfg[2], p_.h - 1); }
   } else {
     c.pressed.P1_U = false; c.pressed.P1_D = false;
   }
