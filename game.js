@@ -26,8 +26,8 @@ const MAX_TICKS_PER_FRAME = 5;
 // builds pay zero bytes.
 const DEBUG_HUD = false;
 
-const MOVE_SPEED = 1.2;     // px / tick
-const JUMP_VELOCITY = -3.9; // px / tick — peak ≈ 4.2 tiles
+// Move + jump scale with armor: copper +1 tile jump / +0.1 spd, iron +2 / +0.2,
+// mithril +3 / +0.3. Inlined at the input site to avoid extra consts.
 const GRAVITY = 0.18;       // px / tick²
 const TERMINAL_VY = 4.5;
 
@@ -242,15 +242,15 @@ const DAY_INCREMENT_SECONDS = 10;
 // Last step holds for TUTORIAL_FINAL_HOLD_TICKS, then hides.
 const TUTORIAL_STEPS = [
   '',
-  'CHOP A TREE: ' + B1,
-  'COLLECT 10 WOOD',
-  'CRAFT PICKAXE IN ' + B2 + ' MENU',
-  'BUILD BASE: L/R MOVE, U/D SIZE, ' + B1 + ' PLACE',
-  'PLACE A BED',
-  'SLEEP AT NIGHT: ' + B3 + ' x2 ON BED',
-  'FURNACE: WOOD FUELS ORE SMELTING',
-  'SEAL THE BASE BEFORE DAWN',
-  '+1 SCORE PER VILLAGER AT DAWN. GL!',
+  'HIT A TREE WITH ' + B1 + ' FOR WOOD',
+  'COLLECT 10 WOOD FOR YOUR PICKAXE',
+  'OPEN BUILD MENU (' + B2 + ') TO CRAFT PICKAXE',
+  'BUILD A BASE: L/R MOVES, U/D SIZES, ' + B1 + ' CONFIRMS',
+  'PLACE A BED (YOUR HOME)',
+  'AT NIGHT: STAND ON BED, ' + B3 + ' x2 TO SLEEP',
+  'FURNACE: WOOD FUELS ORE INTO INGOTS',
+  'SEAL BASE WITH WALLS - VILLAGERS COME AT DAWN',
+  '+1 SCORE PER VILLAGER AT DAWN. GOOD LUCK!',
   '',
 ];
 const TUTORIAL_FINAL_HOLD_TICKS = 8 * TICK_RATE;
@@ -1109,24 +1109,26 @@ function handleInput(scene) {
   let vx = 0;
   if (c.held.P1_L) vx -= 1;
   if (c.held.P1_R) vx += 1;
-  scene.player.vx = vx * MOVE_SPEED;
+  scene.player.vx = vx * (1.2 + scene.armor * 0.2);
   if (vx !== 0) scene.facing = vx;
 
   // Jump — joystick UP only (P1_U / W). Ground-jump OR swim-stroke: when
   // in any liquid you can kick upward repeatedly to simulate swimming.
   if (c.pressed.P1_U) {
     if (scene.player.onGround || (liquidStatus(scene, scene.player) & LQ_ANY)) {
-      scene.player.vy = JUMP_VELOCITY;
+      scene.player.vy = -3.9 - scene.armor * 0.4;
       scene.player.onGround = false;
     }
   }
   c.pressed.P1_U = false;
 
-  // U (P1_1) — single press fires immediately; holding U auto-repeats
-  // 4 times per second (every 15 ticks). Day: mine. Night: sword swing.
+  // U (P1_1) — single press fires immediately; holding U auto-repeats.
+  // Default 4/sec (every 15 ticks). Copper 5/sec (12), iron 6/sec (10),
+  // mithril 7.5/sec (8). Lower-tier tools stay at 15.
   if (c.held.P1_1) scene.holdU = (scene.holdU || 0) + 1;
   else scene.holdU = 0;
-  if (c.pressed.P1_1 || scene.holdU >= 15) {
+  const _at = getActiveTier(scene);
+  if (c.pressed.P1_1 || scene.holdU >= (_at > 2 ? 18 - _at * 2 : 15)) {
     c.pressed.P1_1 = false;
     scene.holdU = 0;
     if (scene.nightActive) {
