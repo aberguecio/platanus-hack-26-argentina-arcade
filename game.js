@@ -24,7 +24,7 @@ const MAX_TICKS_PER_FRAME = 5;
 // Dev-only x/y/tick/fps overlay. Flip to `true` for debugging — the
 // minifier DCEs the `if (DEBUG_HUD)` branches when false, so release
 // builds pay zero bytes.
-const DEBUG_HUD = false;
+const DEBUG_HUD = true;
 
 const MOVE_SPEED = 1.2;     // px / tick
 const JUMP_VELOCITY = -3.9; // px / tick — peak ≈ 4.2 tiles
@@ -445,7 +445,7 @@ function create() {
   // Inventory / tools / crafting state.
   scene.inventory = new Uint16Array(64);
   scene.discovered = new Uint8Array(64);
-  scene.pick = TIER_FIST;
+  scene.pick = 5;  // DEBUG: mithril pickaxe from spawn
   scene.sword = TIER_FIST;
   scene.armor = 0;
   scene.invDirty = true;
@@ -967,14 +967,12 @@ function resolveMineralStability(scene) {
       if (cat === CAT_MAGIC) {
         if (visited[idx] !== tag) { visited[idx] = tag; queue[qtail++] = idx; }
       } else if (cat === CAT_MINERAL) {
-        // Mineral is anchored if it's on the band border, OR sitting on
-        // any solid tile (dirt/sand/gravel/bricks/magic). This matches
-        // intuition: a stone chunk resting on sand doesn't fall just
-        // because it isn't in a pure mineral chain.
+        // Mineral is anchored if on band border, OR adjacent to a solid
+        // tile on left, right or below (3 sides). Lateral anchoring fixes
+        // walls bordering internal bubbles that the down-only check missed.
         const onBorder = x === tx0 || x === tx1 - 1 || y === ty0 || y === ty1 - 1;
-        const belowIdx = idx + WORLD_W;
-        const restsOnSolid = belowIdx < w.length && isSolidForPlayer(w[belowIdx]);
-        if ((onBorder || restsOnSolid) && visited[idx] !== tag) {
+        const adjSolid = isSolidForPlayer(w[idx - 1]) || isSolidForPlayer(w[idx + 1]) || isSolidForPlayer(w[idx + WORLD_W]);
+        if ((onBorder || adjSolid) && visited[idx] !== tag) {
           visited[idx] = tag; queue[qtail++] = idx;
         }
       }
