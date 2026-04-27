@@ -24,7 +24,7 @@ const MAX_TICKS_PER_FRAME = 5;
 // Dev-only x/y/tick/fps overlay. Flip to `true` for debugging — the
 // minifier DCEs the `if (DEBUG_HUD)` branches when false, so release
 // builds pay zero bytes.
-const DEBUG_HUD = true;
+const DEBUG_HUD = false;
 
 const MOVE_SPEED = 1.2;     // px / tick
 const JUMP_VELOCITY = -3.9; // px / tick — peak ≈ 4.2 tiles
@@ -445,7 +445,7 @@ function create() {
   // Inventory / tools / crafting state.
   scene.inventory = new Uint16Array(64);
   scene.discovered = new Uint8Array(64);
-  scene.pick = 5;  // DEBUG: mithril pickaxe from spawn
+  scene.pick = TIER_FIST;
   scene.sword = TIER_FIST;
   scene.armor = 0;
   scene.invDirty = true;
@@ -525,12 +525,13 @@ function generateWorld(w) {
   for (let x = 0; x < WORLD_W; x++) {
     const wave = Math.sin(x * 0.06) * 3 + Math.sin(x * 0.21) * 2;
     const surfaceY = (60 + wave) | 0;
+    const hardRockY = (190 + wave) | 0;
     for (let y = 0; y < WORLD_H; y++) {
       const idx = y * WORLD_W + x;
       if (x === 0 || x === WORLD_W - 1 || y === WORLD_H - 1) w[idx] = BORDER;
       else if (y < surfaceY)          w[idx] = AIR;
       else if (y < surfaceY + 8)      w[idx] = DIRT;
-      else if (y < 160)               w[idx] = STONE;
+      else if (y < hardRockY)         w[idx] = STONE;
       else                            w[idx] = HARD_ROCK;
     }
   }
@@ -550,12 +551,12 @@ function generateWorld(w) {
 
   // count, fill, baseTarget, yLo, yHi, rxMax, ryMax — packed CSV.
   const VEINS = [
-    15,CLOUD,AIR,8,43,5,2, 50,SAND,STONE,70,155,11,7,
-    40,WATER,STONE,70,155,9,6, 25,LAVA,STONE,140,160,3,2,
-    80,COPPER,STONE,90,158,2,2, 90,AIR,STONE,75,160,4,2,
-    110,LAVA,HARD_ROCK,165,505,4,3, 50,WATER,HARD_ROCK,165,400,6,4,
-    90,COPPER,HARD_ROCK,165,400,2,2, 180,IRON,HARD_ROCK,165,505,2,2,
-    60,MITHRIL,HARD_ROCK,400,505,2,2, 140,AIR,HARD_ROCK,165,505,5,3,
+    15,CLOUD,AIR,8,43,5,2, 50,SAND,STONE,80,155,11,7,
+    40,WATER,STONE,80,155,9,6, 25,LAVA,STONE,140,185,3,2,
+    80,COPPER,STONE,115,178,2,2, 90,AIR,STONE,75,185,4,2,
+    160,LAVA,HARD_ROCK,200,505,6,4, 90,WATER,HARD_ROCK,200,450,8,5,
+    90,COPPER,HARD_ROCK,200,400,2,2, 180,IRON,HARD_ROCK,210,505,2,2,
+    60,MITHRIL,HARD_ROCK,310,505,2,2, 140,AIR,HARD_ROCK,200,505,5,3,
   ];
   for (let i = 0; i < VEINS.length; i += 7)
     pocket(VEINS[i], VEINS[i+1], VEINS[i+2], VEINS[i+3], VEINS[i+4], VEINS[i+5], VEINS[i+6]);
@@ -829,11 +830,11 @@ function tryFall(scene, w, damage, idx, x, tick, t, fb) {
     if (dirty) scene.dirtyMineral = true;
     return;
   }
-  // 2. Swap with liquid below (sandlike, mineral). Skip if the liquid was
-  // already moved this tick — prevents an isolated mineral column from
-  // cascading the same liquid up many rows in a single tick (the visible
-  // "water rising through solid stone" effect).
-  if ((fb & FB_SWAP_LIQUID) && downCat === CAT_LIQUID && !(downCell & MOVED_FLAG)) {
+  // 2. Swap with liquid below (sandlike, mineral). For minerals (FB_FALLING),
+  // skip if the liquid was already moved this tick — prevents the cascade
+  // that scrambles isolated mineral columns. Sand (no FB_FALLING) cascades
+  // freely so it pours through water naturally.
+  if ((fb & FB_SWAP_LIQUID) && downCat === CAT_LIQUID && (!(fb & FB_FALLING) || !(downCell & MOVED_FLAG))) {
     w[dIdx] = t | writeFlags;
     w[idx] = (downCell & TYPE_MASK) | MOVED_FLAG;
     damage[idx] = 0;
@@ -841,12 +842,22 @@ function tryFall(scene, w, damage, idx, x, tick, t, fb) {
     return;
   }
   const bias = (tick & 1) ? 1 : -1;
-  // 3. Diagonal-down with alternating bias.
+  // 3. Diagonal-down with alternating bias. Step into AIR; for FB_SWAP_LIQUID
+  // actors (sand, minerals) also swap diagonally into liquid so piles spread.
   if (fb & FB_DIAGONAL) {
     for (let dir = 0; dir < 2; dir++) {
       const dx = (dir === 0) ? bias : -bias;
-      if (BLOCK_CAT[w[dIdx + dx] & TYPE_MASK] === CAT_AIR) {
+      const diagCell = w[dIdx + dx];
+      const diagCat = BLOCK_CAT[diagCell & TYPE_MASK];
+      if (diagCat === CAT_AIR) {
         w[dIdx + dx] = t | writeFlags; w[idx] = AIR; damage[idx] = 0;
+        if (dirty) scene.dirtyMineral = true;
+        return;
+      }
+      if ((fb & FB_SWAP_LIQUID) && diagCat === CAT_LIQUID && (!(fb & FB_FALLING) || !(diagCell & MOVED_FLAG))) {
+        w[dIdx + dx] = t | writeFlags;
+        w[idx] = (diagCell & TYPE_MASK) | MOVED_FLAG;
+        damage[idx] = 0;
         if (dirty) scene.dirtyMineral = true;
         return;
       }
@@ -1975,8 +1986,8 @@ function showToast(scene, text) {
 
 // ----- Build menu -----
 
-const BUILD_MENU_ROW_COUNT = 16;
-const BUILD_MENU_ROW_STEP = 18;
+const BUILD_MENU_ROW_COUNT = 20;
+const BUILD_MENU_ROW_STEP = 15;
 
 function getCurrentRecipes(scene) {
   return scene.buildMenu.tab === 'tools' ? TOOL_RECIPES : BUILDING_RECIPES;
@@ -2235,7 +2246,7 @@ function refreshPlacement(scene) {
   const anyColumn = recipe.kind === 'base';
 
   let valid = false;
-  for (let y = feetTy; y >= p_.h; y--) {
+  for (let y = feetTy + 1; y >= p_.h; y--) {
     let footprintOk = true;
     for (let yy = y - p_.h + 1; yy <= y && footprintOk; yy++) {
       if (yy < 1 || yy >= WORLD_H - 1) { footprintOk = false; break; }
@@ -2514,19 +2525,18 @@ function spawnMonstersTick(scene) {
   for (let k = 0; k < count && scene.monsters.length < maxMons; k++) spawnMonster(scene, chosen);
 }
 
-// True when player is just below the local surface — triggers ghost spawn
-// (anti-bunker mechanic). 2 tiles below = "apenas bajo tierra".
+// True when player is below row 72 (y = 720 px) — bajo la capa de dirt.
+// Triggers ghost spawn altiro al entrar a stone, sin importar superficie local.
 function isPlayerUnderground(scene) {
-  const tx = clamp((scene.player.x / TILE) | 0, 1, WORLD_W - 2);
-  return scene.player.y > findSurface(scene.world, tx) * TILE + 2 * TILE;
+  return scene.player.y > 72 * TILE;
 }
 
 function tickGhostSpawner(scene) {
-  if (!isPlayerUnderground(scene)) return;
+  if (!isPlayerUnderground(scene)) { scene.ghostSpawnTimer = 0; return; }
   if (--scene.ghostSpawnTimer > 0) return;
-  scene.ghostSpawnTimer = 10 * TICK_RATE;
+  scene.ghostSpawnTimer = 60;
   let g = 0;
-  for (const m of scene.monsters) if (m.type === MON_GHOST && ++g >= 3) return;
+  for (const m of scene.monsters) if (m.type === MON_GHOST && ++g >= 5) return;
   // Spawn at the left or right edge of the viewport, in its lower half
   // (creepy "emerging from below" feel). Phase flag lets them ignore tiles.
   const x = scene.cam.x + (Math.random() < 0.5 ? TILE : GAME_WIDTH - TILE);
