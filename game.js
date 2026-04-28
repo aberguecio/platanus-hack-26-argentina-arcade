@@ -243,14 +243,14 @@ const DAY_INCREMENT_SECONDS = 10;
 const TUTORIAL_STEPS = [
   '',
   'HIT A TREE WITH ' + B1 + ' FOR WOOD',
-  'COLLECT 10 WOOD FOR YOUR PICKAXE',
-  'OPEN BUILD MENU (' + B2 + ') TO CRAFT PICKAXE',
-  'BUILD A BASE: L/R MOVES, U/D SIZES, ' + B1 + ' CONFIRMS',
+  'COLLECT 10 WOOD FOR PICKAXE',
+  'OPEN MENU (' + B2 + ') TO CRAFT PICKAXE',
+  'BUILD BASE: L/R MOVE, U/D SIZE, ' + B1 + ' PLACE',
   'PLACE A BED (YOUR HOME)',
-  'AT NIGHT: STAND ON BED, ' + B3 + ' x2 TO SLEEP',
+  'AT NIGHT: ON BED, ' + B3 + ' x2 TO SLEEP',
   'FURNACE: WOOD FUELS ORE INTO INGOTS',
-  'SEAL BASE WITH WALLS - VILLAGERS COME AT DAWN',
-  '+1 SCORE PER VILLAGER AT DAWN. GOOD LUCK!',
+  'SEAL BASE - VILLAGERS COME AT DAWN',
+  '+1 PER VILLAGER AT DAWN. GOOD LUCK!',
   '',
 ];
 const TUTORIAL_FINAL_HOLD_TICKS = 8 * TICK_RATE;
@@ -416,7 +416,7 @@ function create() {
   scene.tickCount = 0;
 
   // Mineral stability scratch space.
-  scene.bfsQueue = new Int32Array(VW * VH + 16);
+  scene.bfsQueue = new Int32Array((VW + 4) * (VH + 4));
   // Bigger scratch queue for scanVillages (covers the whole map). Allocate
   // once to avoid a 500KB+ GC pause every dawn.
   scene.bigBfsQueue = new Int32Array(WORLD_W * WORLD_H);
@@ -978,12 +978,10 @@ function resolveMineralStability(scene) {
       if (cat === CAT_MAGIC) {
         if (visited[idx] !== tag) { visited[idx] = tag; queue[qtail++] = idx; }
       } else if (cat === CAT_MINERAL) {
-        // Mineral is anchored if on band border, OR adjacent to a solid
-        // tile on left, right or below (3 sides). Lateral anchoring fixes
-        // walls bordering internal bubbles that the down-only check missed.
+        // Seeded if on band border OR resting on a non-mineral anchor
+        // (CAT_SOLID/SANDLIKE/MAGIC mask = 44). Minerals propagate via BFS chain.
         const onBorder = x === tx0 || x === tx1 - 1 || y === ty0 || y === ty1 - 1;
-        const adjSolid = isSolidForPlayer(w[idx - 1]) || isSolidForPlayer(w[idx + 1]) || isSolidForPlayer(w[idx + WORLD_W]);
-        if ((onBorder || adjSolid) && visited[idx] !== tag) {
+        if ((onBorder || ((44 >> BLOCK_CAT[w[idx + WORLD_W] & TYPE_MASK]) & 1)) && visited[idx] !== tag) {
           visited[idx] = tag; queue[qtail++] = idx;
         }
       }
@@ -2403,12 +2401,19 @@ function buildPlacementUi(scene) {
 // ----- Furnace tick (smelt + proximity transfer) -----
 
 function tickFurnaces(scene) {
-  const n = scene.furnaces.length;
-  if (n === 0) return;
   const tick = scene.tickCount;
   const slots = ORE_RAWS.length;
-  for (let fi = 0; fi < n; fi++) {
+  const w = scene.world;
+  // Backward iteration so we can splice broken clusters mid-loop.
+  for (let fi = scene.furnaces.length - 1; fi >= 0; fi--) {
     const f = scene.furnaces[fi];
+    const b = f.cy * WORLD_W + f.cx;
+    // Cluster integrity: if any of the 2x2 tiles is AIR, the player broke it.
+    if (!w[b] || !w[b+1] || !w[b+WORLD_W] || !w[b+WORLD_W+1]) {
+      f.indicator.destroy();
+      scene.furnaces.splice(fi, 1);
+      continue;
+    }
     // Fuel + ore consumed up-front so breaking mid-smelt doesn't refund.
     if (f.smeltIdx < 0) {
       for (let i = 0; i < slots; i++) {
