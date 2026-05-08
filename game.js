@@ -217,7 +217,7 @@ const STY_BS = { fontStyle: 'bold', stroke: '#000000', strokeThickness: 4 };
 const STY_HUD = { fontFamily: 'monospace', fontSize: '11px' };
 // Button labels — flip these to change PC/cabinet UX. esbuild folds them
 // into the strings at build time, so configurability is free at runtime.
-const B1 = 'B1', B2 = 'B2', B3 = 'B3';
+const B1 = 'U', B2 = 'I', B3 = 'O';
 const tierToolName = (tier, suffix) => tier ? TIER_NAMES[tier] + suffix : 'FISTS';
 
 // Tool + base/wall recipes are derived from BLOCKS.flags + .tier + .brick.
