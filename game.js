@@ -39,6 +39,39 @@ const MOVED_FLAG = 0x40;
 const FALLING_FLAG = 0x80;
 
 // ============================================================
+// 1.5. High scores API (web/portfolio build)
+// Replaces window.platanusArcadeStorage with a remote leaderboard.
+// NOTE: this build breaks the cabinet's no-network / no-external-URL
+// restriction. Keep this branch separate from `main`.
+// ============================================================
+
+const API_BASE = 'https://highscores.berguecio.cl';
+const GAME_ID = 'g_e83fb25c1eec4c50';
+
+const fetchHighScores = async () => {
+  try {
+    const res = await fetch(`${API_BASE}/games/${GAME_ID}/highscores?limit=5`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.highscores || []).map(h => {
+      const parts = String(h.player_name).split('|');
+      const d = parseInt(parts[1], 10);
+      return { n: parts[0], s: h.score, d: Number.isFinite(d) ? d : 0 };
+    });
+  } catch (_) { return []; }
+};
+
+const submitHighScore = async (n, s, d) => {
+  try {
+    await fetch(`${API_BASE}/games/${GAME_ID}/highscores`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ player_name: `${n}|${d}`, score: s }),
+    });
+  } catch (_) {}
+};
+
+// ============================================================
 // 2. Block registry — single source of truth.
 // To add a new block: append a row. If its behavior fits an existing
 // category, no other code needs to change.
@@ -476,11 +509,11 @@ function create() {
   scene.player.wasInWater = false;
   scene.gameOver = false;
 
-  // Highscores (top 5, name 3 letters). Loaded async on boot.
+  // Highscores (top 5, name 3 letters). Loaded async on boot from the
+  // remote leaderboard (see section 1.5).
   scene.highscores = [];
-  const _ps = window.platanusArcadeStorage;
-  if (_ps) _ps.get('hs').then(r => {
-    if (r.found) scene.highscores = r.value.slice(0, 5);
+  fetchHighScores().then(arr => {
+    scene.highscores = arr.slice(0, 5);
     refreshHsText(scene);
   });
 
@@ -1051,12 +1084,12 @@ function handleInput(scene) {
       if (dv) { c.pressed.P1_U = c.pressed.P1_D = false; ne.letters[ne.cursor] = (ne.letters[ne.cursor] + dv + 26) % 26; dirty = true; }
       if (c.pressed.P1_1) {
         const nm = _AZ[ne.letters[0]] + _AZ[ne.letters[1]] + _AZ[ne.letters[2]];
-        const hs = scene.highscores;
-        hs.push({ n: nm, s: scene.score, d: scene.daysSurvived });
-        hs.sort((a, b) => b.s - a.s);
-        if (hs.length > 5) hs.length = 5;
-        const ps = window.platanusArcadeStorage;
-        if (ps) ps.set('hs', hs);
+        submitHighScore(nm, scene.score, scene.daysSurvived).then(() =>
+          fetchHighScores().then(arr => {
+            scene.highscores = arr.slice(0, 5);
+            refreshHsText(scene);
+          })
+        );
         scene.deathModal.container.setVisible(false);
         scene.scene.restart();
         return;
